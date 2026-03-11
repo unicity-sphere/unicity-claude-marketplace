@@ -83,10 +83,12 @@ function App() {
 ## Key patterns
 
 ### Transport priority (browser)
-1. **Iframe** (`isInIframe()`) → `PostMessageTransport.forClient()` — dApp embedded in Sphere
-2. **Extension** (`hasExtension()`) → `ExtensionTransport.forClient()` — Chrome extension installed
-3. **Bridge iframe** (previously approved) → Hidden `<iframe src="WALLET_URL/connect-bridge?origin=...">` + `PostMessageTransport.forClient({ target: iframe })` — persistent session, popup only for intents
-4. **Popup** (first-time, no extension) → Open wallet popup for approval, then switch to bridge iframe for persistence
+1. **P1 — Iframe** (`isInIframe()`) → `PostMessageTransport.forClient()` — dApp embedded inside Sphere
+2. **P2 — Extension** (`hasExtension()`) → `ExtensionTransport.forClient()` — Chrome extension installed (best for production — persistent, no popup needed after first approval)
+3. **P3 — Popup** (no extension) → `PostMessageTransport.forClient({ target: popup })` — popup must stay open for the connection to work
+
+> **Why not a hidden bridge iframe?**
+> Cross-origin iframes cannot access the wallet's IndexedDB in modern Chrome (third-party storage partitioning since v115). `BroadcastChannel` is also partitioned. `requestStorageAccess()` requires a user gesture inside the iframe, which is impossible for a hidden element. For persistent connections without the extension, deploy wallet and dApp on the same origin or keep the popup open.
 
 ### Silent auto-connect on mount
 Always try silent connect first to avoid button flash:
@@ -95,19 +97,12 @@ const client = new ConnectClient({ transport, dapp, silent: true });
 client.connect().then(onSuccess).catch(() => { /* show Connect button */ });
 ```
 
-### Bridge iframe lifecycle
-- **Create:** `<iframe src="WALLET_URL/connect-bridge?origin=..." style="display:none">`
-- **Wait for ready:** listen for `HOST_READY_TYPE` message from iframe
-- **Connect:** `PostMessageTransport.forClient({ target: iframe.contentWindow, targetOrigin: WALLET_URL })` with `silent: true`
-- **Intent approval:** iframe sends `sphere-connect:open-popup` → dApp opens popup at `/connect?origin=...&bridge` (intent-only mode)
-- **Persistence:** save `sphere-connect-bridge-approved` in `localStorage` — on next load, create bridge iframe directly
-- **Bridge takeover:** after first-time popup approval, switch session from popup to bridge, close popup
-
-### Popup lifecycle (fallback when bridge unavailable)
+### Popup lifecycle
 - Open: `window.open(WALLET_URL + '/connect?origin=' + encodeURIComponent(location.origin), 'sphere-wallet', 'width=420,height=650')`
 - Wait for ready: listen for `window.message` with `event.data.type === 'sphere-connect:host-ready'`
 - Poll for close: `setInterval(() => { if (popup.closed) disconnect(); }, 1000)`
 - Session resume: save `sessionId` to `sessionStorage`, pass as `resumeSessionId` on reconnect
+- **Important:** closing the popup terminates the connection
 
 ### Imports
 ```typescript

@@ -25,20 +25,17 @@ export interface UseWalletConnect {
   permissions: readonly PermissionScope[];
   error: string | null;
   connect: () => Promise<void>;
+  connectViaExtension: () => Promise<void>;
+  connectViaPopup: () => Promise<void>;
   disconnect: () => Promise<void>;
   query: <T = unknown>(method: RpcMethod | string, params?: Record<string, unknown>) => Promise<T>;
   intent: <T = unknown>(action: IntentAction | string, params: Record<string, unknown>) => Promise<T>;
   on: (event: string, handler: (data: unknown) => void) => () => void;
-  /** True when the bridge iframe needs a popup for intent approval. */
-  needsPopup: boolean;
-  /** Open the approval popup (bridge mode only). */
-  openApprovalPopup: () => void;
+  extensionInstalled: boolean;
 }
 
 const WALLET_URL = import.meta.env.VITE_WALLET_URL || 'https://sphere.unicity.network';
 const SESSION_KEY = 'sphere-connect-session';
-const BRIDGE_APPROVED_KEY = 'sphere-connect-bridge-approved';
-const OPEN_POPUP_MSG = 'sphere-connect:open-popup';
 
 function waitForHostReady(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -58,8 +55,8 @@ function waitForHostReady(): Promise<void> {
 }
 
 export function useWalletConnect(): UseWalletConnect {
-  const [isAutoConnecting, setIsAutoConnecting] = useState(true);
-  const [needsPopup, setNeedsPopup] = useState(false);
+  const willSilentCheck = isInIframe() || hasExtension() || !!sessionStorage.getItem(SESSION_KEY);
+  const [isAutoConnecting, setIsAutoConnecting] = useState(willSilentCheck);
   const [state, setState] = useState({
     isConnected: false,
     isConnecting: false,
@@ -71,76 +68,10 @@ export function useWalletConnect(): UseWalletConnect {
   const clientRef = useRef<ConnectClient | null>(null);
   const transportRef = useRef<ConnectTransport | null>(null);
   const popupRef = useRef<Window | null>(null);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const popupMode = useRef(false);
-  const bridgeMode = useRef(false);
-  const bridgeReadyRef = useRef(false);
 
   // TODO: Replace with your app's metadata
   const dapp = { name: 'My App', description: 'My dApp', url: location.origin } as const;
-
-  // ---------------------------------------------------------------------------
-  // Bridge iframe helpers
-  // ---------------------------------------------------------------------------
-
-  const createBridgeIframe = useCallback((): HTMLIFrameElement => {
-    const existing = document.getElementById('sphere-connect-bridge') as HTMLIFrameElement | null;
-    if (existing) return existing;
-    const iframe = document.createElement('iframe');
-    iframe.id = 'sphere-connect-bridge';
-    iframe.src = WALLET_URL + '/connect-bridge?origin=' + encodeURIComponent(location.origin);
-    iframe.style.display = 'none';
-    iframe.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(iframe);
-    return iframe;
-  }, []);
-
-  const waitForBridgeReady = useCallback((): Promise<void> => {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        window.removeEventListener('message', handler);
-        reject(new Error('Bridge iframe did not become ready in time'));
-      }, HOST_READY_TIMEOUT);
-      function handler(event: MessageEvent) {
-        if (event.data?.type === HOST_READY_TYPE) {
-          clearTimeout(timeout);
-          window.removeEventListener('message', handler);
-          resolve();
-        }
-      }
-      window.addEventListener('message', handler);
-    });
-  }, []);
-
-  /** Connect via hidden bridge iframe (always silent). */
-  const connectViaBridge = useCallback(async (): Promise<ConnectClient | null> => {
-    const iframe = createBridgeIframe();
-    iframeRef.current = iframe;
-    if (!bridgeReadyRef.current) {
-      await waitForBridgeReady();
-      bridgeReadyRef.current = true;
-    }
-    const transport = PostMessageTransport.forClient({
-      target: iframe.contentWindow!,
-      targetOrigin: WALLET_URL,
-    });
-    transportRef.current = transport;
-    const client = new ConnectClient({ transport, dapp, silent: true });
-    clientRef.current = client;
-    try {
-      const result = await client.connect();
-      bridgeMode.current = true;
-      popupMode.current = false;
-      localStorage.setItem(BRIDGE_APPROVED_KEY, '1');
-      setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
-      return client;
-    } catch {
-      transportRef.current?.destroy();
-      clientRef.current = null;
-      transportRef.current = null;
-      return null;
-    }
-  }, [createBridgeIframe, waitForBridgeReady, dapp]);
 
   // ---------------------------------------------------------------------------
   // Popup helpers
@@ -170,18 +101,46 @@ export function useWalletConnect(): UseWalletConnect {
     return client;
   }, [dapp]);
 
-  const openApprovalPopup = useCallback(() => {
-    const popup = window.open(
-      WALLET_URL + '/connect?origin=' + encodeURIComponent(location.origin) + '&bridge',
-      'sphere-wallet', 'width=420,height=650',
-    );
-    if (popup) popupRef.current = popup;
-    setNeedsPopup(false);
-  }, []);
+  // ---------------------------------------------------------------------------
+  // Public connect methods
+  // ---------------------------------------------------------------------------
 
-  // ---------------------------------------------------------------------------
-  // Public connect / disconnect
-  // ---------------------------------------------------------------------------
+  const connectViaExtension = useCallback(async () => {
+    setState(s => ({ ...s, isConnecting: true, error: null }));
+    try {
+      popupMode.current = false;
+      const transport = ExtensionTransport.forClient();
+      transportRef.current = transport;
+      const client = new ConnectClient({ transport, dapp });
+      clientRef.current = client;
+      const result = await client.connect();
+      setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
+    } catch (err) {
+      setState(s => ({ ...s, isConnecting: false, error: err instanceof Error ? err.message : 'Connection failed' }));
+    }
+  }, [dapp]);
+
+  const connectViaPopup = useCallback(async () => {
+    setState(s => ({ ...s, isConnecting: true, error: null }));
+    try {
+      if (isInIframe()) {
+        // Inside Sphere iframe — connect to parent via PostMessage
+        popupMode.current = false;
+        const transport = PostMessageTransport.forClient();
+        transportRef.current = transport;
+        const client = new ConnectClient({ transport, dapp });
+        clientRef.current = client;
+        const result = await client.connect();
+        setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
+      } else {
+        // Outside iframe — open popup window
+        popupMode.current = true;
+        await openPopupAndConnect();
+      }
+    } catch (err) {
+      setState(s => ({ ...s, isConnecting: false, error: err instanceof Error ? err.message : 'Connection failed' }));
+    }
+  }, [openPopupAndConnect, dapp]);
 
   const connect = useCallback(async () => {
     setState(s => ({ ...s, isConnecting: true, error: null }));
@@ -189,63 +148,23 @@ export function useWalletConnect(): UseWalletConnect {
       if (isInIframe()) {
         // P1: Inside Sphere iframe
         popupMode.current = false;
-        bridgeMode.current = false;
         const transport = PostMessageTransport.forClient();
         transportRef.current = transport;
         const client = new ConnectClient({ transport, dapp });
         clientRef.current = client;
         const result = await client.connect();
         setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
-        return;
-      }
-
-      if (hasExtension()) {
-        // P2: Extension installed
-        try {
-          popupMode.current = false;
-          bridgeMode.current = false;
-          const transport = ExtensionTransport.forClient();
-          transportRef.current = transport;
-          const client = new ConnectClient({ transport, dapp });
-          clientRef.current = client;
-          const result = await client.connect();
-          setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
-          return;
-        } catch {
-          transportRef.current?.destroy();
-          clientRef.current = null;
-          transportRef.current = null;
-        }
-      }
-
-      // P3: Popup for first-time approval, then bridge takeover
-      popupMode.current = true;
-      bridgeMode.current = false;
-      const popupClient = await openPopupAndConnect();
-
-      // Disarm popup-close detector before bridge takeover
-      const popupTransport = transportRef.current;
-      const popupWindow = popupRef.current;
-      popupRef.current = null;
-      popupMode.current = false;
-
-      // Switch to bridge iframe for persistent session
-      const bridgeClient = await connectViaBridge();
-      if (bridgeClient) {
-        popupClient.disconnect().catch(() => {});
-        popupTransport?.destroy();
-        popupWindow?.close();
+      } else if (hasExtension()) {
+        // P2: Extension
+        await connectViaExtension();
       } else {
-        // Bridge failed — restore popup
-        popupMode.current = true;
-        popupRef.current = popupWindow;
-        transportRef.current = popupTransport;
-        clientRef.current = popupClient;
+        // P3: Popup (must stay open for the connection to work)
+        await connectViaPopup();
       }
     } catch (err) {
       setState(s => ({ ...s, isConnecting: false, error: err instanceof Error ? err.message : 'Connection failed' }));
     }
-  }, [dapp, openPopupAndConnect, connectViaBridge]);
+  }, [dapp, connectViaExtension, connectViaPopup]);
 
   const disconnect = useCallback(async () => {
     try { await clientRef.current?.disconnect(); } catch { /* ignore */ }
@@ -255,15 +174,7 @@ export function useWalletConnect(): UseWalletConnect {
     popupRef.current?.close();
     popupRef.current = null;
     popupMode.current = false;
-    if (iframeRef.current) {
-      iframeRef.current.remove();
-      iframeRef.current = null;
-    }
-    bridgeMode.current = false;
-    bridgeReadyRef.current = false;
     sessionStorage.removeItem(SESSION_KEY);
-    localStorage.removeItem(BRIDGE_APPROVED_KEY);
-    setNeedsPopup(false);
     setState({ isConnected: false, isConnecting: false, identity: null, permissions: [], error: null });
   }, []);
 
@@ -282,20 +193,7 @@ export function useWalletConnect(): UseWalletConnect {
     return clientRef.current.on(event, handler);
   }, []);
 
-  // ---------------------------------------------------------------------------
-  // Listen for "open-popup" messages from bridge iframe (intent approval)
-  // ---------------------------------------------------------------------------
-  useEffect(() => {
-    function handleMessage(event: MessageEvent) {
-      if (event.data?.type === OPEN_POPUP_MSG && bridgeMode.current) {
-        setNeedsPopup(true);
-      }
-    }
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, []);
-
-  // Poll for popup close (popup-only mode)
+  // Poll for popup close — reset connection state when detected
   useEffect(() => {
     if (!state.isConnected || !popupMode.current) return;
     const interval = setInterval(() => {
@@ -316,6 +214,7 @@ export function useWalletConnect(): UseWalletConnect {
   // Silent auto-connect on mount
   useEffect(() => {
     const silentConnect = async () => {
+      // P1: Iframe — wait for parent to signal ready
       if (isInIframe()) {
         await new Promise<void>((resolve, reject) => {
           const timer = setTimeout(() => { window.removeEventListener('message', h); reject(new Error('timeout')); }, 5000);
@@ -333,44 +232,22 @@ export function useWalletConnect(): UseWalletConnect {
         return;
       }
 
-      // P2: Extension
+      // P2: Extension — silent check if origin is already approved
       if (hasExtension()) {
-        try {
-          const transport = ExtensionTransport.forClient();
-          transportRef.current = transport;
-          const client = new ConnectClient({ transport, dapp, silent: true });
-          clientRef.current = client;
-          const result = await client.connect();
-          setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
-          return;
-        } catch {
-          transportRef.current?.destroy();
-          clientRef.current = null;
-          transportRef.current = null;
-        }
+        const transport = ExtensionTransport.forClient();
+        transportRef.current = transport;
+        const client = new ConnectClient({ transport, dapp, silent: true });
+        clientRef.current = client;
+        const result = await client.connect();
+        setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
+        return;
       }
 
-      // P3: Bridge iframe (only if previously approved)
-      if (localStorage.getItem(BRIDGE_APPROVED_KEY)) {
-        const client = await connectViaBridge();
-        if (client) return;
-      }
-
-      // P4: Popup session resume
+      // P3: Popup session resume — if popup is still open, reconnect
       const saved = sessionStorage.getItem(SESSION_KEY);
       if (saved) {
         popupMode.current = true;
-        const popup = window.open(WALLET_URL + '/connect?origin=' + encodeURIComponent(location.origin), 'sphere-wallet', 'width=420,height=650');
-        if (!popup) return;
-        popupRef.current = popup;
-        const transport = PostMessageTransport.forClient({ target: popup, targetOrigin: WALLET_URL });
-        transportRef.current = transport;
-        await waitForHostReady();
-        const client = new ConnectClient({ transport, dapp, resumeSessionId: saved });
-        clientRef.current = client;
-        const result = await client.connect();
-        sessionStorage.setItem(SESSION_KEY, result.sessionId);
-        setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
+        await openPopupAndConnect();
       }
     };
 
@@ -383,15 +260,24 @@ export function useWalletConnect(): UseWalletConnect {
       .finally(() => setIsAutoConnecting(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { ...state, isAutoConnecting, connect, disconnect, query, intent, on, needsPopup, openApprovalPopup };
+  return { ...state, isAutoConnecting, connect, connectViaExtension, connectViaPopup, disconnect, query, intent, on, extensionInstalled: hasExtension() };
 }
 ```
+
+## Connection modes
+
+| Priority | Mode | Persistent? | Notes |
+|----------|------|-------------|-------|
+| P1 | Embedded iframe | Yes (parent keeps running) | dApp runs inside Sphere's own iframe |
+| P2 | Browser extension | Yes (service worker) | Best UX — no popup needed after first approval |
+| P3 | Popup window | **No** — popup must stay open | Fallback when no extension installed |
+
+> **Why not a hidden bridge iframe?** Cross-origin iframes cannot access the wallet's IndexedDB in modern Chrome (third-party storage partitioning since v115). `BroadcastChannel` is also partitioned. `requestStorageAccess()` requires a user gesture inside the iframe. For persistent connections without the extension, deploy wallet and dApp on the same origin.
 
 ## Usage notes
 
 - Replace the `dapp` metadata with the actual app name and description
 - The `VITE_WALLET_URL` env var defaults to `https://sphere.unicity.network`
 - `isAutoConnecting` is `true` during the initial silent check — use it to show a loading state instead of flashing the Connect button
-- The hook manages the full lifecycle: transport selection, connect, disconnect, bridge iframe, popup polling, session resume
-- **Bridge mode:** After first popup approval, the session switches to a hidden iframe. Closing the popup no longer disconnects. On page reload, the bridge auto-reconnects without any popup.
-- **`needsPopup`:** When `true`, the bridge needs user interaction for an intent. Show a prompt and call `openApprovalPopup()` on click.
+- **P2 (extension)** is the recommended mode for production — persistent, no popup needed
+- **P3 (popup)** — closing the popup terminates the connection. Session IDs are saved to `sessionStorage` so page reloads can resume without re-approval (the popup re-opens automatically)

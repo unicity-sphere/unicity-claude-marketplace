@@ -12,10 +12,13 @@ In Claude Code (VS Code extension):
 
 ## Available Plugins
 
-| Plugin | Description |
-|--------|-------------|
-| [sphere-connect](https://github.com/unicity-sphere/sphere-connect-plugin) | Integrate Sphere wallet Connect protocol into your dApp |
+| Plugin | Category | Description |
+|--------|----------|-------------|
+| [sphere-connect](plugins/sphere-connect/) | development | Integrate Sphere wallet Connect protocol into your dApp |
 
 ## For Plugin Developers
 
-To add a plugin to this marketplace, submit a PR adding your plugin entry to `.claude-plugin/marketplace.json`.
+To add a plugin to this marketplace, submit a PR:
+1. Create a directory under `plugins/your-plugin-name/`
+2. Add `.claude-plugin/plugin.json`, `skills/`, and/or `commands/`
+3. Add an entry to `.claude-plugin/marketplace.json`

@@ -1,0 +1,11 @@
+{
+  "name": "Unicity Sphere Plugins",
+  "description": "Official Claude Code plugins for the Unicity Sphere wallet ecosystem",
+  "plugins": [
+    {
+      "name": "sphere-connect",
+      "description": "Integrate Sphere wallet Connect protocol into your dApp. Generates transport detection, wallet connection hooks, and full RPC/intent integration for React, Node.js, and vanilla JS.",
+      "repository": "https://github.com/unicity-sphere/sphere-connect-plugin"
+    }
+  ]
+}

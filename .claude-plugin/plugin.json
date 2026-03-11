@@ -1,0 +1,11 @@
+{
+  "name": "sphere-connect",
+  "description": "Integrate Sphere wallet Connect protocol into your dApp. Generates transport detection, wallet connection hooks, and full RPC/intent integration for React, Node.js, and vanilla JS.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Unicity Labs"
+  },
+  "homepage": "https://github.com/unicitylabs/sphere-sdk",
+  "repository": "https://github.com/unicitylabs/sphere-connect-plugin",
+  "license": "MIT"
+}

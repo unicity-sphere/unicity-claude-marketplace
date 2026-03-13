@@ -4,11 +4,25 @@ Official Claude Code plugin marketplace for the Unicity Sphere wallet ecosystem.
 
 ## Installation
 
-In Claude Code (VS Code extension):
+### VS Code Extension
 
 1. Open **Manage Plugins** → **Marketplaces** tab
 2. Add: `https://github.com/unicity-sphere/unicity-claude-marketplace`
 3. Switch to **Plugins** tab and enable the plugins you need
+
+### CLI (Terminal)
+
+In Claude Code interactive mode, use the `/plugin` command:
+
+```bash
+# 1. Add the marketplace
+/plugin marketplace add https://github.com/unicity-sphere/unicity-claude-marketplace
+
+# 2. Browse and install plugins via interactive UI
+/plugin
+```
+
+In the interactive UI, switch to the **Discover** tab to find and install `sphere-connect`.
 
 ## Available Plugins
 

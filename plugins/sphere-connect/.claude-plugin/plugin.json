@@ -5,7 +5,7 @@
   "author": {
     "name": "Unicity Labs"
   },
-  "homepage": "https://github.com/unicitylabs/sphere-sdk",
-  "repository": "https://github.com/unicitylabs/sphere-connect-plugin",
+  "homepage": "https://github.com/unicity-sphere/unicity-claude-marketplace/tree/main/plugins/sphere-connect",
+  "repository": "https://github.com/unicity-sphere/unicity-claude-marketplace",
   "license": "MIT"
 }

@@ -1,10 +1,10 @@
 # React Template: useWalletConnect Hook
 
-This is a simplified `useWalletConnect` hook for React projects. Adapt it to the developer's project structure.
+Uses SDK's `autoConnect()` for automatic transport detection, silent reconnect, and full lifecycle management.
 
 ## Dependencies
 
-Requires `@unicitylabs/sphere-sdk` installed and the detection utilities from [detection.md](detection.md).
+Requires `@unicitylabs/sphere-sdk` installed. No separate detection file needed.
 
 ## Template
 
@@ -12,10 +12,9 @@ Requires `@unicitylabs/sphere-sdk` installed and the detection utilities from [d
 // src/hooks/useWalletConnect.ts
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { ConnectClient, HOST_READY_TYPE, HOST_READY_TIMEOUT } from '@unicitylabs/sphere-sdk/connect';
-import { PostMessageTransport, ExtensionTransport } from '@unicitylabs/sphere-sdk/connect/browser';
-import type { ConnectTransport, PublicIdentity, RpcMethod, IntentAction, PermissionScope } from '@unicitylabs/sphere-sdk/connect';
-import { isInIframe, hasExtension } from '../lib/sphere-detection';
+import { autoConnect, isInIframe, hasExtension } from '@unicitylabs/sphere-sdk/connect/browser';
+import type { AutoConnectResult, DetectedTransport } from '@unicitylabs/sphere-sdk/connect/browser';
+import type { PublicIdentity, RpcMethod, IntentAction, PermissionScope } from '@unicitylabs/sphere-sdk/connect';
 
 export interface UseWalletConnect {
   isConnected: boolean;
@@ -32,31 +31,24 @@ export interface UseWalletConnect {
   intent: <T = unknown>(action: IntentAction | string, params: Record<string, unknown>) => Promise<T>;
   on: (event: string, handler: (data: unknown) => void) => () => void;
   extensionInstalled: boolean;
+  transportType: DetectedTransport | null;
 }
 
 const WALLET_URL = import.meta.env.VITE_WALLET_URL || 'https://sphere.unicity.network';
-const SESSION_KEY = 'sphere-connect-session';
 
-function waitForHostReady(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      window.removeEventListener('message', handler);
-      reject(new Error('Wallet popup did not become ready in time'));
-    }, HOST_READY_TIMEOUT);
-    function handler(event: MessageEvent) {
-      if (event.data?.type === HOST_READY_TYPE) {
-        clearTimeout(timeout);
-        window.removeEventListener('message', handler);
-        resolve();
-      }
-    }
-    window.addEventListener('message', handler);
-  });
-}
+// TODO: Replace with your app's metadata
+const DAPP_META = {
+  name: 'My App',
+  description: 'My dApp',
+  url: typeof location !== 'undefined' ? location.origin : '',
+} as const;
 
 export function useWalletConnect(): UseWalletConnect {
-  const willSilentCheck = isInIframe() || hasExtension() || !!sessionStorage.getItem(SESSION_KEY);
+  // Silent auto-connect for iframe and extension (both have persistent hosts).
+  const willSilentCheck = isInIframe() || hasExtension();
+
   const [isAutoConnecting, setIsAutoConnecting] = useState(willSilentCheck);
+  const [transportType, setTransportType] = useState<DetectedTransport | null>(null);
   const [state, setState] = useState({
     isConnected: false,
     isConnecting: false,
@@ -65,202 +57,87 @@ export function useWalletConnect(): UseWalletConnect {
     error: null as string | null,
   });
 
-  const clientRef = useRef<ConnectClient | null>(null);
-  const transportRef = useRef<ConnectTransport | null>(null);
-  const popupRef = useRef<Window | null>(null);
-  const popupMode = useRef(false);
+  const resultRef = useRef<AutoConnectResult | null>(null);
 
-  // TODO: Replace with your app's metadata
-  const dapp = { name: 'My App', description: 'My dApp', url: location.origin } as const;
-
-  // ---------------------------------------------------------------------------
-  // Popup helpers
-  // ---------------------------------------------------------------------------
-
-  const openPopupAndConnect = useCallback(async (): Promise<ConnectClient> => {
-    if (!popupRef.current || popupRef.current.closed) {
-      const popup = window.open(
-        WALLET_URL + '/connect?origin=' + encodeURIComponent(location.origin),
-        'sphere-wallet', 'width=420,height=650',
-      );
-      if (!popup) throw new Error('Popup blocked. Please allow popups for this site.');
-      popupRef.current = popup;
-    } else {
-      popupRef.current.focus();
-    }
-    transportRef.current?.destroy();
-    const transport = PostMessageTransport.forClient({ target: popupRef.current, targetOrigin: WALLET_URL });
-    transportRef.current = transport;
-    await waitForHostReady();
-    const resumeSessionId = sessionStorage.getItem(SESSION_KEY) ?? undefined;
-    const client = new ConnectClient({ transport, dapp, resumeSessionId });
-    clientRef.current = client;
-    const result = await client.connect();
-    sessionStorage.setItem(SESSION_KEY, result.sessionId);
-    setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
-    return client;
-  }, [dapp]);
-
-  // ---------------------------------------------------------------------------
-  // Public connect methods
-  // ---------------------------------------------------------------------------
-
-  const connectViaExtension = useCallback(async () => {
+  const doConnect = useCallback(async (forceTransport?: DetectedTransport, silent?: boolean) => {
     setState(s => ({ ...s, isConnecting: true, error: null }));
     try {
-      popupMode.current = false;
-      const transport = ExtensionTransport.forClient();
-      transportRef.current = transport;
-      const client = new ConnectClient({ transport, dapp });
-      clientRef.current = client;
-      const result = await client.connect();
-      setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
+      const result = await autoConnect({
+        dapp: DAPP_META,
+        walletUrl: WALLET_URL,
+        forceTransport,
+        silent,
+      });
+      resultRef.current = result;
+      setTransportType(result.transport);
+      setState({
+        isConnected: true,
+        isConnecting: false,
+        identity: result.connection.identity,
+        permissions: result.connection.permissions,
+        error: null,
+      });
     } catch (err) {
-      setState(s => ({ ...s, isConnecting: false, error: err instanceof Error ? err.message : 'Connection failed' }));
+      const message = err instanceof Error ? err.message : 'Connection failed';
+      setState(s => ({
+        ...s,
+        isConnecting: false,
+        error: silent ? null : message,
+      }));
     }
-  }, [dapp]);
+  }, []);
 
-  const connectViaPopup = useCallback(async () => {
-    setState(s => ({ ...s, isConnecting: true, error: null }));
-    try {
-      if (isInIframe()) {
-        // Inside Sphere iframe — connect to parent via PostMessage
-        popupMode.current = false;
-        const transport = PostMessageTransport.forClient();
-        transportRef.current = transport;
-        const client = new ConnectClient({ transport, dapp });
-        clientRef.current = client;
-        const result = await client.connect();
-        setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
-      } else {
-        // Outside iframe — open popup window
-        popupMode.current = true;
-        await openPopupAndConnect();
-      }
-    } catch (err) {
-      setState(s => ({ ...s, isConnecting: false, error: err instanceof Error ? err.message : 'Connection failed' }));
-    }
-  }, [openPopupAndConnect, dapp]);
-
-  const connect = useCallback(async () => {
-    setState(s => ({ ...s, isConnecting: true, error: null }));
-    try {
-      if (isInIframe()) {
-        // P1: Inside Sphere iframe
-        popupMode.current = false;
-        const transport = PostMessageTransport.forClient();
-        transportRef.current = transport;
-        const client = new ConnectClient({ transport, dapp });
-        clientRef.current = client;
-        const result = await client.connect();
-        setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
-      } else if (hasExtension()) {
-        // P2: Extension
-        await connectViaExtension();
-      } else {
-        // P3: Popup (must stay open for the connection to work)
-        await connectViaPopup();
-      }
-    } catch (err) {
-      setState(s => ({ ...s, isConnecting: false, error: err instanceof Error ? err.message : 'Connection failed' }));
-    }
-  }, [dapp, connectViaExtension, connectViaPopup]);
+  const connect = useCallback(() => doConnect(), [doConnect]);
+  const connectViaExtension = useCallback(() => doConnect('extension'), [doConnect]);
+  const connectViaPopup = useCallback(() => {
+    return isInIframe() ? doConnect('iframe') : doConnect('popup');
+  }, [doConnect]);
 
   const disconnect = useCallback(async () => {
-    try { await clientRef.current?.disconnect(); } catch { /* ignore */ }
-    transportRef.current?.destroy();
-    clientRef.current = null;
-    transportRef.current = null;
-    popupRef.current?.close();
-    popupRef.current = null;
-    popupMode.current = false;
-    sessionStorage.removeItem(SESSION_KEY);
+    if (resultRef.current) {
+      await resultRef.current.disconnect();
+      resultRef.current = null;
+    }
+    setTransportType(null);
     setState({ isConnected: false, isConnecting: false, identity: null, permissions: [], error: null });
   }, []);
 
   const query = useCallback(async <T = unknown>(method: RpcMethod | string, params?: Record<string, unknown>): Promise<T> => {
-    if (!clientRef.current) throw new Error('Not connected');
-    return clientRef.current.query<T>(method, params);
+    if (!resultRef.current) throw new Error('Not connected');
+    return resultRef.current.client.query<T>(method, params);
   }, []);
 
   const intent = useCallback(async <T = unknown>(action: IntentAction | string, params: Record<string, unknown>): Promise<T> => {
-    if (!clientRef.current) throw new Error('Not connected');
-    return clientRef.current.intent<T>(action, params);
+    if (!resultRef.current) throw new Error('Not connected');
+    return resultRef.current.client.intent<T>(action, params);
   }, []);
 
   const on = useCallback((event: string, handler: (data: unknown) => void): (() => void) => {
-    if (!clientRef.current) throw new Error('Not connected');
-    return clientRef.current.on(event, handler);
+    if (!resultRef.current) throw new Error('Not connected');
+    return resultRef.current.client.on(event, handler);
   }, []);
-
-  // Poll for popup close — reset connection state when detected
-  useEffect(() => {
-    if (!state.isConnected || !popupMode.current) return;
-    const interval = setInterval(() => {
-      if (popupRef.current && popupRef.current.closed) {
-        clearInterval(interval);
-        transportRef.current?.destroy();
-        clientRef.current = null;
-        transportRef.current = null;
-        popupRef.current = null;
-        popupMode.current = false;
-        sessionStorage.removeItem(SESSION_KEY);
-        setState({ isConnected: false, isConnecting: false, identity: null, permissions: [], error: null });
-      }
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [state.isConnected]);
 
   // Silent auto-connect on mount
   useEffect(() => {
-    const silentConnect = async () => {
-      // P1: Iframe — wait for parent to signal ready
-      if (isInIframe()) {
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => { window.removeEventListener('message', h); reject(new Error('timeout')); }, 5000);
-          function h(e: MessageEvent) {
-            if (e.data?.type === HOST_READY_TYPE) { clearTimeout(timer); window.removeEventListener('message', h); resolve(); }
-          }
-          window.addEventListener('message', h);
-        });
-        const transport = PostMessageTransport.forClient();
-        transportRef.current = transport;
-        const client = new ConnectClient({ transport, dapp, silent: true });
-        clientRef.current = client;
-        const result = await client.connect();
-        setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
-        return;
-      }
-
-      // P2: Extension — silent check if origin is already approved
-      if (hasExtension()) {
-        const transport = ExtensionTransport.forClient();
-        transportRef.current = transport;
-        const client = new ConnectClient({ transport, dapp, silent: true });
-        clientRef.current = client;
-        const result = await client.connect();
-        setState({ isConnected: true, isConnecting: false, identity: result.identity, permissions: result.permissions, error: null });
-        return;
-      }
-
-      // P3: Popup session resume — if popup is still open, reconnect
-      const saved = sessionStorage.getItem(SESSION_KEY);
-      if (saved) {
-        popupMode.current = true;
-        await openPopupAndConnect();
-      }
-    };
-
-    silentConnect()
-      .catch(() => {
-        transportRef.current?.destroy();
-        clientRef.current = null;
-        transportRef.current = null;
-      })
+    if (!willSilentCheck) return;
+    doConnect(undefined, true)
+      .catch(() => { /* silent check failed — show Connect button */ })
       .finally(() => setIsAutoConnecting(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { ...state, isAutoConnecting, connect, connectViaExtension, connectViaPopup, disconnect, query, intent, on, extensionInstalled: hasExtension() };
+  return {
+    ...state,
+    isAutoConnecting,
+    connect,
+    connectViaExtension,
+    connectViaPopup,
+    disconnect,
+    query,
+    intent,
+    on,
+    extensionInstalled: hasExtension(),
+    transportType,
+  };
 }
 ```
 
@@ -269,15 +146,50 @@ export function useWalletConnect(): UseWalletConnect {
 | Priority | Mode | Persistent? | Notes |
 |----------|------|-------------|-------|
 | P1 | Embedded iframe | Yes (parent keeps running) | dApp runs inside Sphere's own iframe |
-| P2 | Browser extension | Yes (service worker) | Best UX — no popup needed after first approval |
+| P2 | Browser extension | Yes (service worker) | Best UX — auto-reconnects on page reload |
 | P3 | Popup window | **No** — popup must stay open | Fallback when no extension installed |
 
-> **Why not a hidden bridge iframe?** Cross-origin iframes cannot access the wallet's IndexedDB in modern Chrome (third-party storage partitioning since v115). `BroadcastChannel` is also partitioned. `requestStorageAccess()` requires a user gesture inside the iframe. For persistent connections without the extension, deploy wallet and dApp on the same origin.
+## Usage
 
-## Usage notes
+```tsx
+import { useWalletConnect } from './hooks/useWalletConnect';
 
-- Replace the `dapp` metadata with the actual app name and description
-- The `VITE_WALLET_URL` env var defaults to `https://sphere.unicity.network`
-- `isAutoConnecting` is `true` during the initial silent check — use it to show a loading state instead of flashing the Connect button
-- **P2 (extension)** is the recommended mode for production — persistent, no popup needed
-- **P3 (popup)** — closing the popup terminates the connection. Session IDs are saved to `sessionStorage` so page reloads can resume without re-approval (the popup re-opens automatically)
+function App() {
+  const wallet = useWalletConnect();
+
+  // Loading state during auto-reconnect — prevents Connect button flash
+  if (wallet.isAutoConnecting) return <div>Connecting...</div>;
+
+  // Not connected — show connect options
+  if (!wallet.isConnected) {
+    return (
+      <div>
+        <button onClick={wallet.connect}>Connect Wallet</button>
+        {/* Or specific transport: */}
+        {wallet.extensionInstalled && (
+          <button onClick={wallet.connectViaExtension}>Connect via Extension</button>
+        )}
+        <button onClick={wallet.connectViaPopup}>Connect via Popup</button>
+        {wallet.error && <p style={{ color: 'red' }}>{wallet.error}</p>}
+      </div>
+    );
+  }
+
+  // Connected
+  return (
+    <div>
+      <p>Connected as {wallet.identity?.nametag} via {wallet.transportType}</p>
+      <button onClick={wallet.disconnect}>Disconnect</button>
+    </div>
+  );
+}
+```
+
+## Notes
+
+- Replace `DAPP_META` with your actual app name and description
+- `VITE_WALLET_URL` defaults to `https://sphere.unicity.network`
+- `isAutoConnecting` prevents flashing the Connect button on page reload
+- Extension mode auto-reconnects instantly on reload (background service worker checks approved origins)
+- Popup mode requires the popup to stay open — closing it disconnects
+- `autoConnect()` handles all transport detection internally — no separate detection file needed

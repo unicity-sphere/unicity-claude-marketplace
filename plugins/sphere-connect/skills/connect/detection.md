@@ -1,8 +1,21 @@
 # Transport Detection Utilities
 
-These utilities detect the browser environment to select the correct transport.
+Detection utilities for selecting the correct transport. These are **also exported from the SDK** — you only need a separate file if you want to customize the logic.
 
-## TypeScript
+## SDK exports (recommended)
+
+```typescript
+import { isInIframe, hasExtension, detectTransport } from '@unicitylabs/sphere-sdk/connect/browser';
+import type { DetectedTransport } from '@unicitylabs/sphere-sdk/connect/browser';
+
+detectTransport(); // → 'iframe' | 'extension' | 'popup'
+```
+
+> **Note:** If you use `autoConnect()`, you don't need these at all — transport detection is built in.
+
+## Custom detection file (TypeScript)
+
+Only create this if you need custom detection logic.
 
 ```typescript
 // src/lib/sphere-detection.ts
@@ -31,7 +44,7 @@ export function hasExtension(): boolean {
 }
 ```
 
-## JavaScript
+## Custom detection file (JavaScript)
 
 ```javascript
 // src/sphere-detection.js
@@ -55,10 +68,8 @@ export function hasExtension() {
 
 ## How detection works
 
-- **`isInIframe()`**: Checks if the page is embedded inside another page. When true, the dApp is loaded inside Sphere's iframe and should use `PostMessageTransport.forClient()` to talk to the parent window directly.
+- **`isInIframe()`**: Page is embedded inside another page (Sphere's iframe) → use `PostMessageTransport.forClient()`.
 
-- **`hasExtension()`**: Checks if the Sphere browser extension injected `window.sphere.isInstalled()`. When true, the dApp should use `ExtensionTransport.forClient()` for native Chrome extension messaging.
+- **`hasExtension()`**: Sphere browser extension injected `window.sphere.isInstalled()` → use `ExtensionTransport.forClient()`. This is the best mode — persistent connection via background service worker, auto-reconnects on page reload.
 
-- **Bridge iframe (auto-reconnect)**: If neither iframe nor extension is detected but the origin was previously approved (`localStorage` has `sphere-connect-bridge-approved`), the dApp creates a hidden `<iframe src="WALLET_URL/connect-bridge?origin=...">` and uses `PostMessageTransport.forClient({ target: iframe.contentWindow, targetOrigin: WALLET_URL })` with `silent: true`. The session persists even when the popup is closed.
-
-- **Fallback (popup)**: If no prior approval exists, the dApp opens Sphere as a popup window for first-time approval. After approval, the session switches to a bridge iframe for persistence (bridge takeover).
+- **Fallback (popup)**: No extension, not in iframe → open Sphere as a popup window. The popup must stay open for the connection to work.

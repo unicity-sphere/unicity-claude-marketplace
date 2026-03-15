@@ -3,7 +3,7 @@ name: connect
 description: >
   Sphere wallet Connect protocol integration. Use when the developer wants to
   connect their dApp to a Sphere wallet, imports @unicitylabs/sphere-sdk/connect,
-  asks about wallet integration, ConnectClient, PostMessageTransport,
+  asks about wallet integration, ConnectClient, autoConnect, PostMessageTransport,
   ExtensionTransport, or WebSocketTransport.
 user-invocable: false
 ---
@@ -29,11 +29,12 @@ If `@unicitylabs/sphere-sdk` is not installed, install it:
 
 Based on the detected framework:
 
-### React projects
-Generate three files based on the templates in this skill:
-1. **Transport detection** — `src/lib/sphere-detection.ts` (see [detection.md](detection.md))
-2. **Main hook** — `src/hooks/useWalletConnect.ts` (see [react-template.md](react-template.md))
-3. **Environment** — Add `VITE_WALLET_URL=https://sphere.unicity.network` to `.env`
+### React projects (recommended: autoConnect)
+Generate one file + env:
+1. **Main hook** — `src/hooks/useWalletConnect.ts` (see [react-template.md](react-template.md))
+2. **Environment** — Add `VITE_WALLET_URL=https://sphere.unicity.network` to `.env`
+
+No separate detection file needed — `autoConnect()` handles transport detection internally.
 
 ### Node.js projects
 Generate one file:
@@ -42,7 +43,7 @@ Generate one file:
 ### Vanilla JS projects
 Generate two files:
 1. **Detection** — `src/sphere-detection.js` (see [detection.md](detection.md))
-2. **Client module** — `src/sphere-connect.js` — adapt the React hook pattern into a plain class/module
+2. **Client module** — `src/sphere-connect.js` — use `autoConnect()` from SDK (see vanilla example below)
 
 ## Step 4: Add TypeScript path mappings (if TypeScript + browser)
 
@@ -60,64 +61,130 @@ Add to `tsconfig.json` `compilerOptions.paths`:
 
 After generating files, show a concise usage example:
 
-```typescript
+```tsx
 import { useWalletConnect } from './hooks/useWalletConnect';
 
 function App() {
-  const { isConnected, isAutoConnecting, connect, disconnect, query, intent, on } = useWalletConnect();
+  const wallet = useWalletConnect();
 
-  if (isAutoConnecting) return <div>Connecting...</div>;
-  if (!isConnected) return <button onClick={connect}>Connect Wallet</button>;
+  if (wallet.isAutoConnecting) return <div>Connecting...</div>;
+  if (!wallet.isConnected) return <button onClick={wallet.connect}>Connect Wallet</button>;
 
-  // Query balance
-  const balance = await query('sphere_getBalance');
+  return <div>Connected as {wallet.identity?.nametag}</div>;
+}
 
-  // Send tokens (opens approval in wallet)
-  await intent('send', { recipient: '@alice', amount: '1000000', coinId: 'UCT' });
+// In your components:
+const balance = await wallet.query('sphere_getBalance');
+await wallet.intent('send', { recipient: '@alice', amount: '1000000', coinId: 'UCT' });
+const unsub = wallet.on('transfer:incoming', (data) => console.log('Received:', data));
+```
 
-  // Listen for events
-  const unsub = on('transfer:incoming', (data) => console.log('Received:', data));
+### Vanilla JS example
+```html
+<button id="connect">Connect Wallet</button>
+<script type="module">
+import { autoConnect } from '@unicitylabs/sphere-sdk/connect/browser';
+
+let wallet = null;
+
+// Try silent auto-reconnect on page load
+try {
+  wallet = await autoConnect({
+    dapp: { name: 'My App', url: location.origin },
+    walletUrl: 'https://sphere.unicity.network',
+    silent: true,
+  });
+  document.getElementById('connect').textContent = `Connected: ${wallet.connection.identity.nametag}`;
+} catch {
+  // Not approved yet — wait for button click
+}
+
+document.getElementById('connect').onclick = async () => {
+  wallet = await autoConnect({
+    dapp: { name: 'My App', url: location.origin },
+    walletUrl: 'https://sphere.unicity.network',
+  });
+  console.log('Connected:', wallet.connection.identity);
+};
+</script>
+```
+
+## Key concepts
+
+### autoConnect() — the recommended way
+
+`autoConnect()` from `@unicitylabs/sphere-sdk/connect/browser` handles everything automatically:
+- Detects the best transport (iframe → extension → popup)
+- Handles the full handshake lifecycle
+- Supports silent auto-reconnect on page reload
+- Returns a `client` for queries, intents, and events
+
+```typescript
+import { autoConnect } from '@unicitylabs/sphere-sdk/connect/browser';
+
+// One function — that's it
+const result = await autoConnect({
+  dapp: { name: 'My App', url: location.origin },
+  walletUrl: 'https://sphere.unicity.network',
+  silent: true, // auto-reconnect without UI
+});
+
+result.client.query('sphere_getBalance');
+result.client.intent('send', { recipient: '@alice', amount: '1000000', coinId: 'UCT' });
+result.client.on('transfer:incoming', (data) => console.log(data));
+await result.disconnect();
+```
+
+### Transport priority (browser)
+
+| Priority | Mode | When | Persistent? |
+|----------|------|------|-------------|
+| P1 | Iframe | `isInIframe()` — dApp embedded in Sphere | Yes |
+| P2 | Extension | `hasExtension()` — Chrome extension installed | Yes (best UX) |
+| P3 | Popup | Fallback | No — popup must stay open |
+
+**Extension (P2) is the best mode for production** — the background service worker is always running, so:
+- Silent auto-reconnect works on every page reload
+- No popup needed after first approval
+- Wallet remembers approved origins in `chrome.storage.local`
+
+### Silent auto-connect on page load
+
+Always try `silent: true` first to avoid flashing the Connect button:
+```typescript
+try {
+  const result = await autoConnect({ dapp, walletUrl, silent: true });
+  // Reconnected — origin was already approved
+} catch {
+  // Not approved — show Connect button
 }
 ```
 
-## Key patterns
+For **extension mode**, silent connect works even if the wallet popup is not open — the background service worker handles it.
 
-### Transport priority (browser)
-1. **P1 — Iframe** (`isInIframe()`) → `PostMessageTransport.forClient()` — dApp embedded inside Sphere
-2. **P2 — Extension** (`hasExtension()`) → `ExtensionTransport.forClient()` — Chrome extension installed (best for production — persistent, no popup needed after first approval)
-3. **P3 — Popup** (no extension) → `PostMessageTransport.forClient({ target: popup })` — popup must stay open for the connection to work
+### Forcing a specific transport
 
-> **Why not a hidden bridge iframe?**
-> Cross-origin iframes cannot access the wallet's IndexedDB in modern Chrome (third-party storage partitioning since v115). `BroadcastChannel` is also partitioned. `requestStorageAccess()` requires a user gesture inside the iframe, which is impossible for a hidden element. For persistent connections without the extension, deploy wallet and dApp on the same origin or keep the popup open.
-
-### Silent auto-connect on mount
-Always try silent connect first to avoid button flash:
 ```typescript
-const client = new ConnectClient({ transport, dapp, silent: true });
-client.connect().then(onSuccess).catch(() => { /* show Connect button */ });
+await autoConnect({ dapp, walletUrl, forceTransport: 'extension' });
+await autoConnect({ dapp, walletUrl, forceTransport: 'popup' });
 ```
-
-### Popup lifecycle
-- Open: `window.open(WALLET_URL + '/connect?origin=' + encodeURIComponent(location.origin), 'sphere-wallet', 'width=420,height=650')`
-- Wait for ready: listen for `window.message` with `event.data.type === 'sphere-connect:host-ready'`
-- Poll for close: `setInterval(() => { if (popup.closed) disconnect(); }, 1000)`
-- Session resume: save `sessionId` to `sessionStorage`, pass as `resumeSessionId` on reconnect
-- **Important:** closing the popup terminates the connection
 
 ### Imports
 ```typescript
-// Core
+// Recommended: autoConnect (handles everything)
+import { autoConnect } from '@unicitylabs/sphere-sdk/connect/browser';
+import type { AutoConnectResult, DetectedTransport } from '@unicitylabs/sphere-sdk/connect/browser';
+
+// Detection utilities (also available standalone)
+import { isInIframe, hasExtension, detectTransport } from '@unicitylabs/sphere-sdk/connect/browser';
+
+// Low-level (only if you need manual control)
 import { ConnectClient } from '@unicitylabs/sphere-sdk/connect';
+import { PostMessageTransport, ExtensionTransport } from '@unicitylabs/sphere-sdk/connect/browser';
 import type { ConnectTransport, PublicIdentity, RpcMethod, IntentAction, PermissionScope } from '@unicitylabs/sphere-sdk/connect';
 
-// Browser transports
-import { PostMessageTransport, ExtensionTransport } from '@unicitylabs/sphere-sdk/connect/browser';
-
-// Node.js transport
+// Node.js
 import { WebSocketTransport } from '@unicitylabs/sphere-sdk/connect/nodejs';
-
-// Constants
-import { HOST_READY_TYPE, HOST_READY_TIMEOUT } from '@unicitylabs/sphere-sdk/connect';
 ```
 
 ## DO NOT
@@ -127,6 +194,7 @@ import { HOST_READY_TYPE, HOST_READY_TIMEOUT } from '@unicitylabs/sphere-sdk/con
 - Hardcode API keys or private keys
 - Override existing connect integration if files already exist
 - Generate overly complex abstractions — keep it minimal and readable
+- Use hidden bridge iframes for cross-origin connections (broken by third-party storage partitioning in Chrome v115+)
 
 ## Full API reference
 

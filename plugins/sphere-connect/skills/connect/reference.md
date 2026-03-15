@@ -208,11 +208,18 @@ HOST_READY_TIMEOUT // 30000 (ms)
 ## Import Paths
 
 ```typescript
+// Recommended: autoConnect (handles transport detection + connection automatically)
+import { autoConnect } from '@unicitylabs/sphere-sdk/connect/browser';
+import type { AutoConnectResult, DetectedTransport } from '@unicitylabs/sphere-sdk/connect/browser';
+
+// Detection utilities (also used internally by autoConnect)
+import { isInIframe, hasExtension, detectTransport } from '@unicitylabs/sphere-sdk/connect/browser';
+
 // Core protocol (ConnectClient, types, constants)
 import { ConnectClient, RPC_METHODS, INTENT_ACTIONS, PERMISSION_SCOPES, ERROR_CODES } from '@unicitylabs/sphere-sdk/connect';
 import type { ConnectTransport, PublicIdentity, RpcMethod, IntentAction, PermissionScope, ConnectResult } from '@unicitylabs/sphere-sdk/connect';
 
-// Browser transports
+// Browser transports (low-level — only if not using autoConnect)
 import { PostMessageTransport, ExtensionTransport } from '@unicitylabs/sphere-sdk/connect/browser';
 
 // Node.js transport

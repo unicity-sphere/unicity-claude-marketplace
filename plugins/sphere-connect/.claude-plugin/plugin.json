@@ -1,7 +1,7 @@
 {
   "name": "sphere-connect",
-  "description": "Integrate Sphere wallet Connect protocol into your dApp. Generates transport detection, wallet connection hooks, and full RPC/intent integration for React, Node.js, and vanilla JS.",
-  "version": "1.0.1",
+  "description": "Connect your dApp to a Sphere wallet in minutes. Auto-detects extension/iframe/popup, handles reconnect on page reload, provides query/intent/event API. Supports React, Node.js, and vanilla JS.",
+  "version": "1.1.0",
   "author": {
     "name": "Unicity Labs"
   },

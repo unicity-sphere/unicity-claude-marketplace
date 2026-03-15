@@ -19,7 +19,10 @@ Target framework: **$ARGUMENTS** (if not specified, auto-detect from package.jso
 
 2. Check if `@unicitylabs/sphere-sdk` is already installed. If not, ask the user before installing.
 
-3. Generate the integration files using the sphere-connect skill templates.
+3. Generate integration files using the sphere-connect skill templates:
+   - **React/Vue/Svelte**: One hook file using `autoConnect()` from SDK (see react-template.md)
+   - **Node.js**: One client wrapper using `WebSocketTransport` (see nodejs-template.md)
+   - **Vanilla JS**: Use `autoConnect()` directly (see SKILL.md vanilla example)
 
 4. For TypeScript browser projects, add path mappings to `tsconfig.json` for `@unicitylabs/sphere-sdk/connect` and `@unicitylabs/sphere-sdk/connect/browser`.
 

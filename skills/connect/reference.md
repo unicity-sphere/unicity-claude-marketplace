@@ -60,9 +60,12 @@ await client.intent('payment_request', { recipient: '@bob', amount: '500000', co
 // Show receive address
 await client.intent('receive', {});
 
-// Sign a message
+// Sign a message (returns hex signature string)
 const sig = await client.intent('sign_message', { message: 'I agree to the Terms of Service' });
 ```
+
+> **Backend auth pattern:** Use `sign_message` to authenticate users to your server via challenge-response → JWT.
+> See [backend-auth.md](backend-auth.md) for full implementation.
 
 ## Permission Scopes
 
@@ -208,11 +211,18 @@ HOST_READY_TIMEOUT // 30000 (ms)
 ## Import Paths
 
 ```typescript
+// Recommended: autoConnect (handles transport detection + connection automatically)
+import { autoConnect } from '@unicitylabs/sphere-sdk/connect/browser';
+import type { AutoConnectResult, DetectedTransport } from '@unicitylabs/sphere-sdk/connect/browser';
+
+// Detection utilities (also used internally by autoConnect)
+import { isInIframe, hasExtension, detectTransport } from '@unicitylabs/sphere-sdk/connect/browser';
+
 // Core protocol (ConnectClient, types, constants)
 import { ConnectClient, RPC_METHODS, INTENT_ACTIONS, PERMISSION_SCOPES, ERROR_CODES } from '@unicitylabs/sphere-sdk/connect';
 import type { ConnectTransport, PublicIdentity, RpcMethod, IntentAction, PermissionScope, ConnectResult } from '@unicitylabs/sphere-sdk/connect';
 
-// Browser transports
+// Browser transports (low-level — only if not using autoConnect)
 import { PostMessageTransport, ExtensionTransport } from '@unicitylabs/sphere-sdk/connect/browser';
 
 // Node.js transport

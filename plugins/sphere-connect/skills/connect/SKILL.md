@@ -196,6 +196,10 @@ import { WebSocketTransport } from '@unicitylabs/sphere-sdk/connect/nodejs';
 - Generate overly complex abstractions — keep it minimal and readable
 - Use hidden bridge iframes for cross-origin connections (broken by third-party storage partitioning in Chrome v115+)
 
+## Backend authentication
+
+To authenticate users to a backend server using wallet signatures (challenge-response → JWT), see [backend-auth.md](backend-auth.md).
+
 ## Full API reference
 
 For complete RPC methods, intents, permissions, events, and error codes, see [reference.md](reference.md).

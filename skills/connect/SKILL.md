@@ -111,6 +111,15 @@ document.getElementById('connect').onclick = async () => {
 
 ## Key concepts
 
+### Wallet events (critical — always handle)
+
+The wallet pushes two events automatically after connection — **no `sphere_subscribe` needed**:
+
+- **`wallet:locked`** — wallet logged out, popup closed/refreshed, or session ended. **Must fully disconnect.**
+- **`identity:changed`** — user switched address. **Must update displayed identity.**
+
+Additionally, wrap `query()`/`intent()` calls with error handling: if the transport is dead (popup crashed, network lost), auto-disconnect as a fallback. See [react-template.md](react-template.md) for implementation.
+
 ### autoConnect() — the recommended way
 
 `autoConnect()` from `@unicitylabs/sphere-sdk/connect/browser` handles everything automatically:

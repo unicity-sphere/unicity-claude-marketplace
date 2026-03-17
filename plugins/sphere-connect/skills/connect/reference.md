@@ -87,9 +87,49 @@ const sig = await client.intent('sign_message', { message: 'I agree to the Terms
 
 **Default (always granted):** `identity:read`
 
-## Events
+## Wallet Events (auto-pushed)
 
-Events can be subscribed via `client.on()`. The wallet proxies `Sphere.on()` events to connected dApps.
+These events are pushed automatically by `ConnectHost` — **no `sphere_subscribe` needed**. Always handle them.
+
+| Event | Constant | Payload | Description |
+|-------|----------|---------|-------------|
+| `wallet:locked` | `WALLET_EVENTS.LOCKED` | `{}` | Wallet logged out or session ended. dApp should fully disconnect. |
+| `identity:changed` | `WALLET_EVENTS.IDENTITY_CHANGED` | `PublicIdentity` | User switched address. dApp should update displayed identity. |
+
+```typescript
+import { WALLET_EVENTS } from '@unicitylabs/sphere-sdk/connect';
+
+// Always subscribe to these after connecting
+client.on(WALLET_EVENTS.LOCKED, () => {
+  // Full disconnect — wallet is no longer available
+  disconnect();
+});
+
+client.on(WALLET_EVENTS.IDENTITY_CHANGED, (data) => {
+  // Update displayed address/nametag
+  const identity = data as PublicIdentity;
+  console.log('Address changed to:', identity.nametag);
+});
+```
+
+### Error-based disconnect (fallback)
+
+If `wallet:locked` doesn't arrive (e.g., popup crashed), detect dead connections via request errors:
+
+```typescript
+try {
+  await client.query('sphere_getBalance');
+} catch (err) {
+  if (/not.connected|timeout|transport|closed|session/i.test(err.message)) {
+    // Transport is dead — disconnect and show Connect button
+    disconnect();
+  }
+}
+```
+
+## Subscribable Events
+
+Events below require `sphere_subscribe` or `client.on()`. The wallet proxies `Sphere.on()` events to connected dApps.
 
 ### Transfers
 | Event | Payload | Description |

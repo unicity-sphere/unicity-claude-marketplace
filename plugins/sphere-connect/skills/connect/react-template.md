@@ -13,6 +13,7 @@ Requires `@unicitylabs/sphere-sdk` installed. No separate detection file needed.
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { autoConnect, isInIframe, hasExtension } from '@unicitylabs/sphere-sdk/connect/browser';
+import { WALLET_EVENTS } from '@unicitylabs/sphere-sdk/connect';
 import type { AutoConnectResult, DetectedTransport } from '@unicitylabs/sphere-sdk/connect/browser';
 import type { PublicIdentity, RpcMethod, IntentAction, PermissionScope } from '@unicitylabs/sphere-sdk/connect';
 
@@ -20,6 +21,7 @@ export interface UseWalletConnect {
   isConnected: boolean;
   isConnecting: boolean;
   isAutoConnecting: boolean;
+  isWalletLocked: boolean;
   identity: PublicIdentity | null;
   permissions: readonly PermissionScope[];
   error: string | null;
@@ -33,6 +35,15 @@ export interface UseWalletConnect {
   extensionInstalled: boolean;
   transportType: DetectedTransport | null;
 }
+
+const DISCONNECTED = {
+  isConnected: false,
+  isConnecting: false,
+  isWalletLocked: false,
+  identity: null as PublicIdentity | null,
+  permissions: [] as readonly PermissionScope[],
+  error: null as string | null,
+};
 
 const WALLET_URL = import.meta.env.VITE_WALLET_URL || 'https://sphere.unicity.network';
 
@@ -49,15 +60,19 @@ export function useWalletConnect(): UseWalletConnect {
 
   const [isAutoConnecting, setIsAutoConnecting] = useState(willSilentCheck);
   const [transportType, setTransportType] = useState<DetectedTransport | null>(null);
-  const [state, setState] = useState({
-    isConnected: false,
-    isConnecting: false,
-    identity: null as PublicIdentity | null,
-    permissions: [] as readonly PermissionScope[],
-    error: null as string | null,
-  });
+  const [state, setState] = useState({ ...DISCONNECTED });
 
   const resultRef = useRef<AutoConnectResult | null>(null);
+
+  // Full cleanup — resets all state, usable from any disconnect path
+  const fullDisconnect = useCallback(() => {
+    if (resultRef.current) {
+      resultRef.current.disconnect().catch(() => {});
+      resultRef.current = null;
+    }
+    setTransportType(null);
+    setState({ ...DISCONNECTED });
+  }, []);
 
   const doConnect = useCallback(async (forceTransport?: DetectedTransport, silent?: boolean) => {
     setState(s => ({ ...s, isConnecting: true, error: null }));
@@ -71,11 +86,10 @@ export function useWalletConnect(): UseWalletConnect {
       resultRef.current = result;
       setTransportType(result.transport);
       setState({
+        ...DISCONNECTED,
         isConnected: true,
-        isConnecting: false,
         identity: result.connection.identity,
         permissions: result.connection.permissions,
-        error: null,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Connection failed';
@@ -94,28 +108,61 @@ export function useWalletConnect(): UseWalletConnect {
   }, [doConnect]);
 
   const disconnect = useCallback(async () => {
-    if (resultRef.current) {
-      await resultRef.current.disconnect();
-      resultRef.current = null;
+    fullDisconnect();
+  }, [fullDisconnect]);
+
+  // Auto-disconnect on transport/session errors (popup closed, refreshed, logged out)
+  const handleRequestError = useCallback((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/not.connected|timeout|transport|closed|session/i.test(msg)) {
+      fullDisconnect();
     }
-    setTransportType(null);
-    setState({ isConnected: false, isConnecting: false, identity: null, permissions: [], error: null });
-  }, []);
+    throw err;
+  }, [fullDisconnect]);
 
   const query = useCallback(async <T = unknown>(method: RpcMethod | string, params?: Record<string, unknown>): Promise<T> => {
     if (!resultRef.current) throw new Error('Not connected');
-    return resultRef.current.client.query<T>(method, params);
-  }, []);
+    try {
+      return await resultRef.current.client.query<T>(method, params);
+    } catch (err) {
+      return handleRequestError(err) as never;
+    }
+  }, [handleRequestError]);
 
   const intent = useCallback(async <T = unknown>(action: IntentAction | string, params: Record<string, unknown>): Promise<T> => {
     if (!resultRef.current) throw new Error('Not connected');
-    return resultRef.current.client.intent<T>(action, params);
-  }, []);
+    try {
+      return await resultRef.current.client.intent<T>(action, params);
+    } catch (err) {
+      return handleRequestError(err) as never;
+    }
+  }, [handleRequestError]);
 
   const on = useCallback((event: string, handler: (data: unknown) => void): (() => void) => {
     if (!resultRef.current) throw new Error('Not connected');
     return resultRef.current.client.on(event, handler);
   }, []);
+
+  // Handle wallet-initiated events (auto-pushed by ConnectHost, no sphere_subscribe needed)
+  useEffect(() => {
+    if (!state.isConnected || !resultRef.current) return;
+    const client = resultRef.current.client;
+
+    // wallet:locked — wallet logged out or popup navigated away
+    const unsubLocked = client.on(WALLET_EVENTS.LOCKED, () => {
+      fullDisconnect();
+    });
+
+    // identity:changed — user switched address in wallet
+    const unsubIdentity = client.on(WALLET_EVENTS.IDENTITY_CHANGED, (data) => {
+      setState(s => ({ ...s, isWalletLocked: false, identity: data as PublicIdentity }));
+    });
+
+    return () => {
+      unsubLocked();
+      unsubIdentity();
+    };
+  }, [state.isConnected, fullDisconnect]);
 
   // Silent auto-connect on mount
   useEffect(() => {
@@ -149,6 +196,21 @@ export function useWalletConnect(): UseWalletConnect {
 | P2 | Browser extension | Yes (service worker) | Best UX — auto-reconnects on page reload |
 | P3 | Popup window | **No** — popup must stay open | Fallback when no extension installed |
 
+## Wallet events (handled automatically)
+
+The hook automatically handles two wallet-initiated events pushed by `ConnectHost`:
+
+| Event | Behavior |
+|-------|----------|
+| `wallet:locked` | Wallet logged out or popup closed — full disconnect, shows Connect button |
+| `identity:changed` | User switched address — updates `identity` in state, UI re-renders |
+
+These events require **no `sphere_subscribe`** call — they are auto-pushed by the wallet.
+
+### Error-based auto-disconnect
+
+If any `query()` or `intent()` call fails with a transport/session error (e.g., popup was closed or refreshed), the hook automatically disconnects and resets state. This serves as a fallback when the `wallet:locked` event doesn't arrive.
+
 ## Usage
 
 ```tsx
@@ -175,7 +237,7 @@ function App() {
     );
   }
 
-  // Connected
+  // Connected — identity updates automatically when user switches address
   return (
     <div>
       <p>Connected as {wallet.identity?.nametag} via {wallet.transportType}</p>
@@ -193,3 +255,5 @@ function App() {
 - Extension mode auto-reconnects instantly on reload (background service worker checks approved origins)
 - Popup mode requires the popup to stay open — closing it disconnects
 - `autoConnect()` handles all transport detection internally — no separate detection file needed
+- `identity` updates in real-time when the user switches addresses in the wallet
+- Connection auto-resets on wallet logout, popup close, or transport errors

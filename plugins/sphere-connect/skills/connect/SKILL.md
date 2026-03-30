@@ -115,10 +115,28 @@ document.getElementById('connect').onclick = async () => {
 
 The wallet pushes two events automatically after connection — **no `sphere_subscribe` needed**:
 
-- **`wallet:locked`** — wallet logged out, popup closed/refreshed, or session ended. **Must fully disconnect.**
-- **`identity:changed`** — user switched address. **Must update displayed identity.**
+- **`wallet:locked`** — wallet logged out, popup closed/refreshed, or session ended. **Handling depends on the transport:**
+  - **Popup mode:** full disconnect — clear client, transport, and saved session. Do NOT close the popup window.
+  - **Extension / iframe mode:** set `isWalletLocked = true` and wait. The host is still alive; when the user unlocks, `identity:changed` fires and clears the flag.
+- **`identity:changed`** — user switched address (or unlocked after lock). **Must update displayed identity and clear locked state.**
+
+> **Host-side note:** When the wallet's `Sphere` instance is destroyed, the host must call `notifyWalletLocked()` to push the event to connected dApps.
 
 Additionally, wrap `query()`/`intent()` calls with error handling: if the transport is dead (popup crashed, network lost), auto-disconnect as a fallback. See [react-template.md](react-template.md) for implementation.
+
+### Session persistence (popup mode)
+
+Popup connections are not persistent — if the user reloads the page, the connection is lost unless the session is saved. The React template saves `connection.sessionId` to `sessionStorage` after connect and passes `resumeSessionId` to `autoConnect()` on mount. This allows the popup session to resume after a page reload (as long as the popup is still open). On disconnect or connection failure, the saved session is cleared.
+
+### safeSend for WebSocket integrations
+
+When using `WebSocketTransport` in Node.js, always guard against writes to a closing or closed socket. The [nodejs-template.md](nodejs-template.md) patches `ws.send` automatically, or you can use a standalone guard:
+```typescript
+const safeSend = (data: string) => {
+  if (ws.readyState === WebSocket.OPEN) ws.send(data);
+};
+```
+This prevents `"WebSocket is not open"` errors during disconnect races.
 
 ### autoConnect() — the recommended way
 

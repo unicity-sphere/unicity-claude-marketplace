@@ -93,21 +93,38 @@ These events are pushed automatically by `ConnectHost` — **no `sphere_subscrib
 
 | Event | Constant | Payload | Description |
 |-------|----------|---------|-------------|
-| `wallet:locked` | `WALLET_EVENTS.LOCKED` | `{}` | Wallet logged out or session ended. dApp should fully disconnect. |
-| `identity:changed` | `WALLET_EVENTS.IDENTITY_CHANGED` | `PublicIdentity` | User switched address. dApp should update displayed identity. |
+| `wallet:locked` | `WALLET_EVENTS.LOCKED` | `{}` | Wallet logged out or session ended. Handling differs by transport — see below. |
+| `identity:changed` | `WALLET_EVENTS.IDENTITY_CHANGED` | `PublicIdentity` | User switched address. dApp should update displayed identity. Also signals unlock after a `wallet:locked` in extension/iframe mode. |
+
+### Popup vs Extension/Iframe: different LOCKED handling
+
+The `wallet:locked` event means different things depending on the transport:
+
+| Transport | What happened | Correct response |
+|-----------|--------------|-----------------|
+| **Popup** | Wallet was destroyed (logged out, navigated away). The popup window may still exist but the Sphere instance is gone. | Full disconnect: clear client, transport, and saved session. Do **not** programmatically close the popup. |
+| **Extension / Iframe** | Wallet is locked but the host (service worker / parent frame) is still alive. | Set a `isWalletLocked` flag and wait. When the user unlocks, the wallet fires `identity:changed` which clears the flag. |
+
+> **Host-side:** When the wallet's `Sphere` instance is destroyed (logout, lock), the host **must** call `notifyWalletLocked()` on the `ConnectHost` to push this event to all connected dApps. Forgetting this call leaves dApps in a stale connected state.
 
 ```typescript
 import { WALLET_EVENTS } from '@unicitylabs/sphere-sdk/connect';
 
-// Always subscribe to these after connecting
+// Handle differently based on transport
 client.on(WALLET_EVENTS.LOCKED, () => {
-  // Full disconnect — wallet is no longer available
-  disconnect();
+  if (transportType === 'popup') {
+    // Popup: full disconnect — wallet instance is gone
+    disconnect();
+  } else {
+    // Extension / iframe: wallet locked, host still alive — wait for unlock
+    setIsWalletLocked(true);
+  }
 });
 
 client.on(WALLET_EVENTS.IDENTITY_CHANGED, (data) => {
-  // Update displayed address/nametag
+  // Update displayed address/nametag — also clears locked state
   const identity = data as PublicIdentity;
+  setIsWalletLocked(false);
   console.log('Address changed to:', identity.nametag);
 });
 ```

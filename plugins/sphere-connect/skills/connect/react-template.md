@@ -52,11 +52,16 @@ const DAPP_META = {
   name: 'My App',
   description: 'My dApp',
   url: typeof location !== 'undefined' ? location.origin : '',
+  icon: typeof location !== 'undefined' ? `${location.origin}/icon.svg` : '',
 } as const;
+
+const SESSION_KEY = 'sphere_connect_session';
 
 export function useWalletConnect(): UseWalletConnect {
   // Silent auto-connect for iframe and extension (both have persistent hosts).
-  const willSilentCheck = isInIframe() || hasExtension();
+  // Also check for a saved popup session — allows resuming after page reload.
+  const hasSavedSession = typeof sessionStorage !== 'undefined' && !!sessionStorage.getItem(SESSION_KEY);
+  const willSilentCheck = isInIframe() || hasExtension() || hasSavedSession;
 
   const [isAutoConnecting, setIsAutoConnecting] = useState(willSilentCheck);
   const [transportType, setTransportType] = useState<DetectedTransport | null>(null);
@@ -70,6 +75,7 @@ export function useWalletConnect(): UseWalletConnect {
       resultRef.current.disconnect().catch(() => {});
       resultRef.current = null;
     }
+    sessionStorage.removeItem(SESSION_KEY);
     setTransportType(null);
     setState({ ...DISCONNECTED });
   }, []);
@@ -77,14 +83,22 @@ export function useWalletConnect(): UseWalletConnect {
   const doConnect = useCallback(async (forceTransport?: DetectedTransport, silent?: boolean) => {
     setState(s => ({ ...s, isConnecting: true, error: null }));
     try {
+      const savedSession = sessionStorage.getItem(SESSION_KEY);
       const result = await autoConnect({
         dapp: DAPP_META,
         walletUrl: WALLET_URL,
         forceTransport,
         silent,
+        resumeSessionId: savedSession || undefined,
       });
       resultRef.current = result;
       setTransportType(result.transport);
+
+      // Persist session for popup mode — allows resuming after page reload
+      if (result.connection.sessionId) {
+        sessionStorage.setItem(SESSION_KEY, result.connection.sessionId);
+      }
+
       setState({
         ...DISCONNECTED,
         isConnected: true,
@@ -92,6 +106,7 @@ export function useWalletConnect(): UseWalletConnect {
         permissions: result.connection.permissions,
       });
     } catch (err) {
+      sessionStorage.removeItem(SESSION_KEY);
       const message = err instanceof Error ? err.message : 'Connection failed';
       setState(s => ({
         ...s,
@@ -148,9 +163,17 @@ export function useWalletConnect(): UseWalletConnect {
     if (!state.isConnected || !resultRef.current) return;
     const client = resultRef.current.client;
 
-    // wallet:locked — wallet logged out or popup navigated away
+    // wallet:locked — handling depends on transport type
     const unsubLocked = client.on(WALLET_EVENTS.LOCKED, () => {
-      fullDisconnect();
+      if (transportType === 'popup') {
+        // Popup: full disconnect (clear client, transport, session) but do NOT
+        // close the popup — the wallet may just be locked, not gone.
+        fullDisconnect();
+      } else {
+        // Extension / iframe: wallet is locked but the host is still alive.
+        // Set locked flag and wait for unlock (identity:changed fires on unlock).
+        setState(s => ({ ...s, isWalletLocked: true }));
+      }
     });
 
     // identity:changed — user switched address in wallet
@@ -162,7 +185,7 @@ export function useWalletConnect(): UseWalletConnect {
       unsubLocked();
       unsubIdentity();
     };
-  }, [state.isConnected, fullDisconnect]);
+  }, [state.isConnected, fullDisconnect, transportType]);
 
   // Silent auto-connect on mount
   useEffect(() => {
@@ -194,16 +217,16 @@ export function useWalletConnect(): UseWalletConnect {
 |----------|------|-------------|-------|
 | P1 | Embedded iframe | Yes (parent keeps running) | dApp runs inside Sphere's own iframe |
 | P2 | Browser extension | Yes (service worker) | Best UX — auto-reconnects on page reload |
-| P3 | Popup window | **No** — popup must stay open | Fallback when no extension installed |
+| P3 | Popup window | **No** — popup must stay open | Fallback when no extension. Session persisted via `sessionStorage` for page-reload resume. |
 
 ## Wallet events (handled automatically)
 
 The hook automatically handles two wallet-initiated events pushed by `ConnectHost`:
 
-| Event | Behavior |
-|-------|----------|
-| `wallet:locked` | Wallet logged out or popup closed — full disconnect, shows Connect button |
-| `identity:changed` | User switched address — updates `identity` in state, UI re-renders |
+| Event | Popup mode | Extension / Iframe mode |
+|-------|------------|------------------------|
+| `wallet:locked` | Full disconnect — clears client, transport, and sessionStorage. Shows Connect button. The popup itself is **not** closed. | Sets `isWalletLocked = true`. The host is still alive, so the hook waits for unlock (`identity:changed` clears the flag). |
+| `identity:changed` | Updates `identity` in state, UI re-renders | Updates `identity`, clears `isWalletLocked`, UI re-renders |
 
 These events require **no `sphere_subscribe`** call — they are auto-pushed by the wallet.
 
@@ -249,11 +272,11 @@ function App() {
 
 ## Notes
 
-- Replace `DAPP_META` with your actual app name and description
+- Replace `DAPP_META` with your actual app name, description, and icon (shown in wallet connect dialog)
 - `VITE_WALLET_URL` defaults to `https://sphere.unicity.network`
 - `isAutoConnecting` prevents flashing the Connect button on page reload
 - Extension mode auto-reconnects instantly on reload (background service worker checks approved origins)
-- Popup mode requires the popup to stay open — closing it disconnects
+- Popup mode requires the popup to stay open — closing it disconnects. The `sessionId` is saved to `sessionStorage` so the session can resume after page reload (as long as the popup is still open).
 - `autoConnect()` handles all transport detection internally — no separate detection file needed
 - `identity` updates in real-time when the user switches addresses in the wallet
 - Connection auto-resets on wallet logout, popup close, or transport errors

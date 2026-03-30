@@ -50,7 +50,16 @@ export interface SphereClient {
 export async function connectToSphere(config: SphereClientConfig): Promise<SphereClient> {
   const transport = WebSocketTransport.createClient({
     url: config.url,
-    createWebSocket: (url: string) => new WebSocket(url) as any,
+    createWebSocket: (url: string) => {
+      const ws = new WebSocket(url);
+      // Guard against writes to a closing/closed socket — prevents
+      // "WebSocket is not open" errors during disconnect races.
+      const origSend = ws.send.bind(ws);
+      ws.send = (data: any) => {
+        if (ws.readyState === WebSocket.OPEN) origSend(data);
+      };
+      return ws as any;
+    },
     autoReconnect: false,
   });
 
@@ -101,3 +110,15 @@ client.on('transfer:incoming', (data) => console.log('Received:', data));
 // Cleanup
 await client.disconnect();
 ```
+
+## safeSend pattern
+
+When working with raw WebSocket connections (e.g., custom transport wrappers or direct `ws` usage), always guard against writes to a closing or closed socket. The template above patches `ws.send` automatically, but if you manage the WebSocket yourself:
+
+```typescript
+const safeSend = (data: string) => {
+  if (ws.readyState === WebSocket.OPEN) ws.send(data);
+};
+```
+
+This prevents `"WebSocket is not open"` errors that commonly occur during disconnect races or when the remote host drops the connection.

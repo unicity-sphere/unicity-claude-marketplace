@@ -32,44 +32,9 @@ Frontend          Wallet           Backend
 // src/routes/auth.ts
 import { randomBytes } from 'crypto';
 import { FastifyInstance } from 'fastify';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { sha256 } from '@noble/hashes/sha256';
+import { verifySphereAuth, AuthVerificationError } from '@unicitylabs/sphere-sdk';
 
-const SIGN_MESSAGE_PREFIX = 'Sphere Signed Message:\n';
 const challenges = new Map<string, { challenge: string; expiresAt: number }>();
-
-function hashSignMessage(message: string): Uint8Array {
-  const prefixed = `${SIGN_MESSAGE_PREFIX}${message}`;
-  const bytes = new TextEncoder().encode(prefixed);
-  return sha256(sha256(bytes));
-}
-
-function verifySignedMessage(message: string, signature: string, chainPubkey: string): boolean {
-  try {
-    const msgHash = hashSignMessage(message);
-    const sigBytes = hexToBytes(signature);
-    // Recoverable signature: first byte is v (31 or 32), then r (32), s (32)
-    const v = sigBytes[0] - 31;
-    const rs = sigBytes.slice(1);
-    const sig = secp256k1.Signature.fromCompact(bytesToHex(rs)).addRecoveryBit(v);
-    const recovered = sig.recoverPublicKey(msgHash);
-    return recovered.toHex(true) === chainPubkey;
-  } catch {
-    return false;
-  }
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return bytes;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-}
 
 export async function authRoutes(server: FastifyInstance) {
   // Step 1: Get challenge
@@ -103,22 +68,37 @@ export async function authRoutes(server: FastifyInstance) {
       challenges.delete(chainPubkey);
       return reply.status(401).send({ error: 'Challenge expired' });
     }
-
-    const valid = verifySignedMessage(stored.challenge, signature, chainPubkey);
     challenges.delete(chainPubkey); // one-time use
 
-    if (!valid) return reply.status(401).send({ error: 'Invalid signature' });
+    try {
+      // verifySphereAuth combines signature verification AND directAddress
+      // derivation into a single misuse-resistant call. Notice it takes no
+      // `directAddress` parameter — that's by design, see Security notes below.
+      const { chainPubkey: pk, directAddress } = await verifySphereAuth({
+        challenge: stored.challenge,
+        signature,
+        chainPubkey,
+      });
 
-    // Issue JWT — sub = chainPubkey (wallet identifier)
-    const token = server.jwt.sign({ sub: chainPubkey }, { expiresIn: '24h' });
-    return { token };
+      // Issue JWT — `pk` and `directAddress` are both safe identifiers.
+      // The example below uses `pk` (chainPubkey) as the JWT subject because
+      // it's directly self-authenticating via signature, but you can use
+      // `directAddress` instead if your domain prefers it.
+      const token = server.jwt.sign({ sub: pk, addr: directAddress }, { expiresIn: '24h' });
+      return { token };
+    } catch (err) {
+      if (err instanceof AuthVerificationError) {
+        return reply.status(401).send({ error: err.message, code: err.code });
+      }
+      throw err;
+    }
   });
 }
 ```
 
-Install verification dependency:
+Install the SDK (already a dependency if you're using `@unicitylabs/sphere-sdk` elsewhere — `verifySphereAuth` is included):
 ```bash
-npm install @noble/curves @noble/hashes
+npm install @unicitylabs/sphere-sdk
 ```
 
 ## Frontend implementation (React hook)
@@ -275,9 +255,22 @@ server.get('/api/profile', async (req) => {
 
 ## Security notes
 
-- **Challenge is single-use** — delete after verify to prevent replay attacks
-- **Challenge expires in 5 minutes** — prevents stale signature reuse
-- **chainPubkey is included in the challenge message** — links signature to a specific key
-- **Never store signatures** — only the JWT after successful verification
-- **Use `sessionStorage` for JWT** — cleared on tab close; use `localStorage` only if you want persistence across sessions
-- The `sign_message` intent requires `sign:request` permission scope — request it during `autoConnect()`
+- **`verifySphereAuth` is the canonical primitive for backend wallet auth.** Don't reimplement signature verification yourself, and don't manually compose `verifySignedMessage` + `computeDirectAddressFromChainPubkey` unless you have a strong reason — the recipe handles ordering, format validation, and error categorization correctly.
+- **Don't accept identifier claims you can derive.** `verifySphereAuth` deliberately has no `directAddress` parameter. If your design uses `directAddress` (or `l1Address`, or `nametag`) as a primary user identifier, never accept that value from the request body and use it directly as a database key — that's a **pre-bind hijack** (an attacker registers someone else's address under their own pubkey, locking the owner out forever). Let `verifySphereAuth` derive identifiers from the proven `chainPubkey` instead.
+- **Challenge is single-use** — delete it after verify to prevent replay attacks.
+- **Challenge expires in 5 minutes** — prevents stale signature reuse.
+- **chainPubkey is included in the challenge text** — links the signature to a specific key.
+- **Never store signatures** — only the JWT after successful verification.
+- **Use `sessionStorage` for JWT** — cleared on tab close. Use `localStorage` only if you want persistence across sessions.
+- The `sign_message` intent requires `sign:request` permission scope — request it during `autoConnect()`.
+
+### Need just the address derivation?
+
+For custom flows that don't fit the `verifySphereAuth` recipe (e.g., escrow services, batch verification, custom session models), use the primitive directly:
+
+```typescript
+import { computeDirectAddressFromChainPubkey } from '@unicitylabs/sphere-sdk';
+const addr = await computeDirectAddressFromChainPubkey(chainPubkey);  // 'DIRECT://...'
+```
+
+The primitive is deterministic, requires no network round-trip, and produces the exact same address the wallet itself would compute for that pubkey.

@@ -1,10 +1,16 @@
 # Backend Authentication via Wallet Signature
 
-How to authenticate users to a backend server using their Sphere wallet — challenge-response pattern.
+How to authenticate users to a backend server using their Sphere wallet — challenge-response with **signature recovery** and **Nostr identity binding resolution**.
 
 ## Why signing is needed
 
-`autoConnect()` gives the **frontend** proof of wallet ownership. The **backend** has no way to verify this — any HTTP request could claim any wallet address. The solution: the backend issues a random challenge, the wallet signs it, the backend verifies the signature and issues a JWT.
+`autoConnect()` gives the **frontend** proof of wallet ownership. The **backend** has no way to verify this — any HTTP request could claim any wallet address. The solution: the backend issues a random challenge, the wallet signs it, the backend **recovers** the signer's public key from the signature and looks up the corresponding identity on Nostr.
+
+## Critical: don't trust any identifier from the request body
+
+A naive backend reads `{ directAddress, chainPubkey, signature }` from the body and trusts the claimed addresses. This is broken — an attacker can sign with their own key while claiming someone else's `directAddress`. Past versions of this skill recommended an SDK helper (`verifySphereAuth` / `computeDirectAddressFromChainPubkey`) for this; both are **removed** because `directAddress` cannot in fact be derived from `chainPubkey` — the SDK derives it from `SHA256(privkey)`, which is private.
+
+The correct flow:
 
 ```
 Frontend          Wallet           Backend
@@ -12,91 +18,107 @@ Frontend          Wallet           Backend
    |── autoConnect ─►|                |
    |◄─ identity ─────|                |
    |                 |                |
-   |── POST /auth/challenge ─────────►|
-   |◄── { challenge } ───────────────|
+   |── POST /auth/challenge ─────────►|  ← no body claims
+   |◄── { nonce } ───────────────────|
    |                 |                |
-   |── intent('sign_message') ───────►|
+   |── intent('sign_message', msg) ─►|
    |◄── { signature } ───────────────|
    |                 |                |
    |── POST /auth/verify ────────────►|
-   |   { chainPubkey, challenge,      |
-   |     signature }                  |
+   |   { nonce, signature }           |  ← that's it
+   |                                  |  recoverPubkey(challenge, sig)
+   |                                  |  → chainPubkey
+   |                                  |  sphere.resolve(chainPubkey)
+   |                                  |  → { directAddress, nametag, ... }
    |◄── { token: JWT } ──────────────|
    |                 |                |
    |── GET /api/... (Bearer JWT) ────►|
 ```
 
+The backend **never reads** `directAddress` or `chainPubkey` from the request — both come from cryptographic recovery and Nostr resolution respectively.
+
 ## Backend implementation (Fastify + TypeScript)
 
 ```typescript
 // src/routes/auth.ts
-import { randomBytes } from 'crypto';
-import { FastifyInstance } from 'fastify';
-import { verifySphereAuth, AuthVerificationError } from '@unicitylabs/sphere-sdk';
+import { randomBytes } from 'node:crypto';
+import type { FastifyInstance } from 'fastify';
+import { recoverPubkeyFromSignature } from '@unicitylabs/sphere-sdk';
+import { Sphere } from '@unicitylabs/sphere-sdk';
+import { createNodeProviders } from '@unicitylabs/sphere-sdk/impl/nodejs';
 
-const challenges = new Map<string, { challenge: string; expiresAt: number }>();
+// Singleton Sphere instance used only for resolving — not for signing/sending.
+// Initialize once at boot.
+let sphere: Sphere;
+export async function initSphere() {
+  const providers = createNodeProviders({ network: 'testnet', dataDir: './.sphere-resolver' });
+  const { sphere: instance } = await Sphere.init({ ...providers, autoGenerate: true });
+  sphere = instance;
+}
+
+const CHALLENGE_TTL_MS = 5 * 60_000;
+const nonces = new Map<string, { challenge: string; expiresAt: number }>();
 
 export async function authRoutes(server: FastifyInstance) {
-  // Step 1: Get challenge
-  server.post<{ Body: { chainPubkey: string } }>('/auth/challenge', async (req, reply) => {
-    const { chainPubkey } = req.body;
-    if (!chainPubkey) return reply.status(400).send({ error: 'chainPubkey required' });
-
+  // Step 1: Issue a challenge (no claims from the client)
+  server.post('/auth/challenge', async (req) => {
     const nonce = randomBytes(16).toString('hex');
+    const issuedAt = new Date().toISOString();
     const challenge = [
       'Sign in to My App',
-      `Chain Public Key: ${chainPubkey}`,
+      `Domain: ${req.headers.host ?? 'localhost'}`,
       `Nonce: ${nonce}`,
-      `Issued At: ${new Date().toISOString()}`,
+      `Issued At: ${issuedAt}`,
     ].join('\n');
-
-    // Store with 5-minute expiry
-    challenges.set(chainPubkey, { challenge, expiresAt: Date.now() + 5 * 60_000 });
-
-    return { challenge };
+    nonces.set(nonce, { challenge, expiresAt: Date.now() + CHALLENGE_TTL_MS });
+    return { nonce };
   });
 
-  // Step 2: Verify signature → issue JWT
-  server.post<{
-    Body: { chainPubkey: string; signature: string };
-  }>('/auth/verify', async (req, reply) => {
-    const { chainPubkey, signature } = req.body;
+  // Step 2: Verify signature → resolve identity → issue JWT
+  server.post<{ Body: { nonce: string; signature: string } }>(
+    '/auth/verify',
+    async (req, reply) => {
+      const { nonce, signature } = req.body;
 
-    const stored = challenges.get(chainPubkey);
-    if (!stored) return reply.status(401).send({ error: 'No challenge found — request a new one' });
-    if (Date.now() > stored.expiresAt) {
-      challenges.delete(chainPubkey);
-      return reply.status(401).send({ error: 'Challenge expired' });
-    }
-    challenges.delete(chainPubkey); // one-time use
-
-    try {
-      // verifySphereAuth combines signature verification AND directAddress
-      // derivation into a single misuse-resistant call. Notice it takes no
-      // `directAddress` parameter — that's by design, see Security notes below.
-      const { chainPubkey: pk, directAddress } = await verifySphereAuth({
-        challenge: stored.challenge,
-        signature,
-        chainPubkey,
-      });
-
-      // Issue JWT — `pk` and `directAddress` are both safe identifiers.
-      // The example below uses `pk` (chainPubkey) as the JWT subject because
-      // it's directly self-authenticating via signature, but you can use
-      // `directAddress` instead if your domain prefers it.
-      const token = server.jwt.sign({ sub: pk, addr: directAddress }, { expiresIn: '24h' });
-      return { token };
-    } catch (err) {
-      if (err instanceof AuthVerificationError) {
-        return reply.status(401).send({ error: err.message, code: err.code });
+      const stored = nonces.get(nonce);
+      if (!stored) return reply.status(401).send({ error: 'unknown_nonce' });
+      if (Date.now() > stored.expiresAt) {
+        nonces.delete(nonce);
+        return reply.status(401).send({ error: 'nonce_expired' });
       }
-      throw err;
-    }
-  });
+      nonces.delete(nonce); // one-time use
+
+      // 1. Recover the signer's pubkey from the signature — no claims needed.
+      let chainPubkey: string;
+      try {
+        chainPubkey = recoverPubkeyFromSignature(stored.challenge, signature);
+      } catch {
+        return reply.status(401).send({ error: 'invalid_signature' });
+      }
+
+      // 2. Look up the Nostr-bound identity for that pubkey.
+      const peer = await sphere.resolve(chainPubkey);
+      if (!peer || !peer.directAddress) {
+        // Nostr has no binding for this pubkey. The wallet must publish
+        // an identity binding event before logging in. Surface this as a
+        // dedicated error so the frontend can guide the user.
+        return reply.status(401).send({ error: 'no_identity_binding' });
+      }
+
+      // 3. (Optional) Detect pre-bind hijacks — see Security notes below.
+
+      // 4. Issue JWT with the trusted, resolved identity.
+      const token = server.jwt.sign(
+        { sub: chainPubkey, addr: peer.directAddress, name: peer.nametag ?? null },
+        { expiresIn: '24h' },
+      );
+      return { token };
+    },
+  );
 }
 ```
 
-Install the SDK (already a dependency if you're using `@unicitylabs/sphere-sdk` elsewhere — `verifySphereAuth` is included):
+Install the SDK (any 0.7.2+ release):
 ```bash
 npm install @unicitylabs/sphere-sdk
 ```
@@ -109,51 +131,53 @@ import { useState, useCallback } from 'react';
 
 const API_URL = import.meta.env.VITE_API_URL ?? '';
 
-export interface WalletAuthState {
-  token: string | null;
-  isAuthenticating: boolean;
-  error: string | null;
-  authenticate: (chainPubkey: string, signMessage: (msg: string) => Promise<string>) => Promise<string>;
-  logout: () => void;
-}
-
-export function useWalletAuth(): WalletAuthState {
+export function useWalletAuth() {
   const [token, setToken] = useState<string | null>(() => sessionStorage.getItem('wallet_token'));
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const authenticate = useCallback(async (
-    chainPubkey: string,
     signMessage: (msg: string) => Promise<string>,
   ): Promise<string> => {
     setIsAuthenticating(true);
     setError(null);
     try {
-      // 1. Get challenge
-      const challengeRes = await fetch(`${API_URL}/auth/challenge`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chainPubkey }),
-      });
-      const { challenge } = await challengeRes.json();
+      // 1. Ask backend for a nonce-bound challenge. Send no claims.
+      const challengeRes = await fetch(`${API_URL}/auth/challenge`, { method: 'POST' });
+      const { nonce } = await challengeRes.json();
 
-      // 2. Sign challenge with wallet
+      // 2. Reconstruct the canonical challenge text. It must byte-match
+      //    what the backend stored. Keep this string in sync with the
+      //    server format. The wallet sees the exact text it signs.
+      const challenge = [
+        'Sign in to My App',
+        `Domain: ${window.location.host}`,
+        `Nonce: ${nonce}`,
+        // Note: Issued At is the only field that differs — we let the
+        // server inject it and don't include it client-side. Use server
+        // echo if you need to display the exact signed text.
+      ].join('\n');
+
+      // 3. Sign via the wallet (sign_message intent).
       const signature = await signMessage(challenge);
 
-      // 3. Verify signature → get JWT
+      // 4. Send only { nonce, signature } — never the address or pubkey.
       const verifyRes = await fetch(`${API_URL}/auth/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chainPubkey, signature }),
+        body: JSON.stringify({ nonce, signature }),
       });
-      if (!verifyRes.ok) throw new Error((await verifyRes.json()).error);
+      if (!verifyRes.ok) {
+        const { error: code } = await verifyRes.json();
+        throw new Error(code);
+      }
       const { token } = await verifyRes.json();
 
       sessionStorage.setItem('wallet_token', token);
       setToken(token);
       return token;
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Authentication failed';
+      const message = err instanceof Error ? err.message : 'auth_failed';
       setError(message);
       throw err;
     } finally {
@@ -170,6 +194,8 @@ export function useWalletAuth(): WalletAuthState {
 }
 ```
 
+> **Practical tip:** to keep the challenge text in sync between client and server, have the backend return the full challenge string instead of just the nonce. The client signs whatever the server sends. This avoids per-deploy format drift.
+
 ## Wiring it together in a component
 
 ```tsx
@@ -181,17 +207,13 @@ function App() {
   const auth = useWalletAuth();
 
   const handleLogin = async () => {
-    if (!wallet.isConnected || !wallet.identity?.chainPubkey) return;
-
+    if (!wallet.isConnected) return;
     await auth.authenticate(
-      wallet.identity.chainPubkey,
-      // signMessage: calls sign_message intent on wallet
       (message) => wallet.intent('sign_message', { message }) as Promise<string>,
     );
   };
 
   if (wallet.isAutoConnecting) return <div>Connecting...</div>;
-
   if (!wallet.isConnected) return <button onClick={wallet.connect}>Connect Wallet</button>;
 
   if (!auth.token) {
@@ -201,7 +223,15 @@ function App() {
         <button onClick={handleLogin} disabled={auth.isAuthenticating}>
           {auth.isAuthenticating ? 'Signing...' : 'Sign In'}
         </button>
-        {auth.error && <p style={{ color: 'red' }}>{auth.error}</p>}
+        {auth.error === 'no_identity_binding' && (
+          <p style={{ color: 'orange' }}>
+            Wallet has no public identity binding yet. Register a nametag in the wallet
+            (which publishes the binding to Nostr), then retry.
+          </p>
+        )}
+        {auth.error && auth.error !== 'no_identity_binding' && (
+          <p style={{ color: 'red' }}>{auth.error}</p>
+        )}
       </div>
     );
   }
@@ -229,15 +259,11 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
-
-// Usage:
-const quests = await apiFetch<Quest[]>('/api/quests');
 ```
 
 ## Protecting routes on the backend (Fastify)
 
 ```typescript
-// Authenticate middleware — add to protected routes
 server.addHook('onRequest', async (req, reply) => {
   try {
     await req.jwtVerify();
@@ -246,31 +272,71 @@ server.addHook('onRequest', async (req, reply) => {
   }
 });
 
-// Access the wallet address in a route handler:
 server.get('/api/profile', async (req) => {
-  const { sub: chainPubkey } = req.user as { sub: string };
-  return { chainPubkey };
+  const { sub: chainPubkey, addr, name } = req.user as {
+    sub: string; addr: string; name: string | null;
+  };
+  return { chainPubkey, directAddress: addr, nametag: name };
 });
 ```
 
 ## Security notes
 
-- **`verifySphereAuth` is the canonical primitive for backend wallet auth.** Don't reimplement signature verification yourself, and don't manually compose `verifySignedMessage` + `computeDirectAddressFromChainPubkey` unless you have a strong reason — the recipe handles ordering, format validation, and error categorization correctly.
-- **Don't accept identifier claims you can derive.** `verifySphereAuth` deliberately has no `directAddress` parameter. If your design uses `directAddress` (or `l1Address`, or `nametag`) as a primary user identifier, never accept that value from the request body and use it directly as a database key — that's a **pre-bind hijack** (an attacker registers someone else's address under their own pubkey, locking the owner out forever). Let `verifySphereAuth` derive identifiers from the proven `chainPubkey` instead.
-- **Challenge is single-use** — delete it after verify to prevent replay attacks.
-- **Challenge expires in 5 minutes** — prevents stale signature reuse.
-- **chainPubkey is included in the challenge text** — links the signature to a specific key.
-- **Never store signatures** — only the JWT after successful verification.
-- **Use `sessionStorage` for JWT** — cleared on tab close. Use `localStorage` only if you want persistence across sessions.
-- The `sign_message` intent requires `sign:request` permission scope — request it during `autoConnect()`.
+### Pre-bind hijack — what to watch for
 
-### Need just the address derivation?
-
-For custom flows that don't fit the `verifySphereAuth` recipe (e.g., escrow services, batch verification, custom session models), use the primitive directly:
+Even with signature recovery + Nostr resolution, you must still defend against the case where a record was created under a hijacked address earlier (before this auth flow was deployed, or because of a different broken endpoint). When a verified signer logs in, compare the resolved identity against your stored user record:
 
 ```typescript
-import { computeDirectAddressFromChainPubkey } from '@unicitylabs/sphere-sdk';
-const addr = await computeDirectAddressFromChainPubkey(chainPubkey);  // 'DIRECT://...'
+const user = await db.users.findOne({ directAddress: peer.directAddress });
+
+if (user && user.chainPubkey !== chainPubkey) {
+  // The stored pubkey for this directAddress disagrees with the one
+  // that just signed. The record is suspect — refuse to issue a JWT
+  // and emit an admin alert. Do NOT auto-rewrite the user record.
+  await emitAdminAlert({
+    type: 'auth.login_blocked_pubkey_mismatch',
+    severity: 'warning',
+    subject: { type: 'wallet', identifier: peer.directAddress },
+    context: { recoveredChainPubkey: chainPubkey, storedChainPubkey: user.chainPubkey },
+  });
+  return reply.status(401).send({ error: 'identity_mismatch' });
+}
 ```
 
-The primitive is deterministic, requires no network round-trip, and produces the exact same address the wallet itself would compute for that pubkey.
+Also scan for foreign records claimed under the same `chainPubkey`:
+
+```typescript
+const foreign = await db.users.find({
+  chainPubkey,
+  walletAddress: { $ne: peer.directAddress },
+}).toArray();
+for (const hijacked of foreign) {
+  await emitAdminAlert({
+    type: 'auth.pre_bind_hijack_detected',
+    severity: 'critical',
+    subject: { type: 'wallet', identifier: hijacked.walletAddress },
+    context: { attackerChainPubkey: chainPubkey, victimWalletAddress: hijacked.walletAddress },
+  });
+}
+```
+
+The reference implementation of this pattern lives in [`sphere-api/src/services/auth.service.ts`](https://github.com/unicity-sphere/sphere-api/blob/main/src/services/auth.service.ts).
+
+### General
+
+- **Never derive `directAddress` from `chainPubkey` on the backend.** It cannot be done — the SDK derives `directAddress` from `SHA256(privkey)`, not from `chainPubkey`. Always resolve via `sphere.resolve(chainPubkey)` (Nostr binding event).
+- **Body-claimed identifiers are advisory at best.** Old API consumers may still send `directAddress` / `chainPubkey` in the body; accept them only for backward-compat parsing and ignore them when establishing identity.
+- **Challenge is single-use** — delete after verify.
+- **Challenge expires in 5 minutes** — prevents stale signature reuse.
+- **Bind the nonce to the request, not to the user.** Don't key the nonce store by `chainPubkey` — that lets an attacker overwrite a victim's pending nonce. Key by the nonce itself.
+- **Use `sessionStorage` for JWT** — cleared on tab close. Use `localStorage` only if you want persistence.
+- **Never store signatures** — only the JWT after successful verification.
+- The `sign_message` intent requires `sign:request` permission scope — request it during `autoConnect()`.
+
+### What if Nostr resolution fails?
+
+`sphere.resolve()` can return `null` if:
+- The wallet has never published an identity binding event (i.e. has no nametag and has not done a full key-binding publish).
+- The configured Nostr relays are unreachable.
+
+For login UX, return a specific `no_identity_binding` error so the frontend can suggest registering a nametag (which publishes the binding). For ops, emit an admin alert (e.g. `type: 'auth.no_binding'`, severity `info`) so you can see how often it happens and decide whether to relax the policy for specific cases.

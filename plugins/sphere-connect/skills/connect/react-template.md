@@ -13,7 +13,7 @@ Requires `@unicitylabs/sphere-sdk` installed. No separate detection file needed.
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { autoConnect, isInIframe, hasExtension } from '@unicitylabs/sphere-sdk/connect/browser';
-import { WALLET_EVENTS } from '@unicitylabs/sphere-sdk/connect';
+import { WALLET_EVENTS, SPHERE_NETWORKS, ERROR_CODES } from '@unicitylabs/sphere-sdk/connect';
 import type { AutoConnectResult, DetectedTransport } from '@unicitylabs/sphere-sdk/connect/browser';
 import type { PublicIdentity, RpcMethod, IntentAction, PermissionScope } from '@unicitylabs/sphere-sdk/connect';
 
@@ -87,6 +87,7 @@ export function useWalletConnect(): UseWalletConnect {
       const result = await autoConnect({
         dapp: DAPP_META,
         walletUrl: WALLET_URL,
+        network: SPHERE_NETWORKS.testnet2, // required by the v2 compatibility gate
         forceTransport,
         silent,
         resumeSessionId: savedSession || undefined,
@@ -107,7 +108,16 @@ export function useWalletConnect(): UseWalletConnect {
       });
     } catch (err) {
       sessionStorage.removeItem(SESSION_KEY);
-      const message = err instanceof Error ? err.message : 'Connection failed';
+      // Handle v2 compatibility gate rejections with user-facing messages
+      const code = (err as { code?: number })?.code;
+      let message: string;
+      if (code === ERROR_CODES.INCOMPATIBLE_NETWORK) {
+        message = 'Wrong network — please switch your wallet to testnet2.';
+      } else if (code === ERROR_CODES.UNSUPPORTED_PROTOCOL_VERSION) {
+        message = 'This app needs to be updated to connect to your wallet.';
+      } else {
+        message = err instanceof Error ? err.message : 'Connection failed';
+      }
       setState(s => ({
         ...s,
         isConnecting: false,

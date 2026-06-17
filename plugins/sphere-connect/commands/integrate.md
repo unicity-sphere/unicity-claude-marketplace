@@ -23,6 +23,7 @@ Target framework: **$ARGUMENTS** (if not specified, auto-detect from package.jso
    - **React/Vue/Svelte**: One hook file using `autoConnect()` from SDK (see react-template.md)
    - **Node.js**: One client wrapper using `WebSocketTransport` (see nodejs-template.md)
    - **Vanilla JS**: Use `autoConnect()` directly (see SKILL.md vanilla example)
+   - **All templates**: Always include `network: SPHERE_NETWORKS.testnet2` in the `autoConnect()` / `ConnectClient` config. The v2 compatibility gate rejects connections that omit this field (`INCOMPATIBLE_NETWORK`, code 4008).
 
 4. For TypeScript browser projects, add path mappings to `tsconfig.json` for `@unicitylabs/sphere-sdk/connect` and `@unicitylabs/sphere-sdk/connect/browser`.
 

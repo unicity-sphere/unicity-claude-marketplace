@@ -84,6 +84,7 @@ const unsub = wallet.on('transfer:incoming', (data) => console.log('Received:', 
 <button id="connect">Connect Wallet</button>
 <script type="module">
 import { autoConnect } from '@unicitylabs/sphere-sdk/connect/browser';
+import { SPHERE_NETWORKS, ERROR_CODES } from '@unicitylabs/sphere-sdk/connect';
 
 let wallet = null;
 
@@ -92,6 +93,7 @@ try {
   wallet = await autoConnect({
     dapp: { name: 'My App', url: location.origin },
     walletUrl: 'https://sphere.unicity.network',
+    network: SPHERE_NETWORKS.testnet2, // required by the v2 compatibility gate
     silent: true,
   });
   document.getElementById('connect').textContent = `Connected: ${wallet.connection.identity.nametag}`;
@@ -100,11 +102,23 @@ try {
 }
 
 document.getElementById('connect').onclick = async () => {
-  wallet = await autoConnect({
-    dapp: { name: 'My App', url: location.origin },
-    walletUrl: 'https://sphere.unicity.network',
-  });
-  console.log('Connected:', wallet.connection.identity);
+  try {
+    wallet = await autoConnect({
+      dapp: { name: 'My App', url: location.origin },
+      walletUrl: 'https://sphere.unicity.network',
+      network: SPHERE_NETWORKS.testnet2,
+    });
+    console.log('Connected:', wallet.connection.identity);
+  } catch (err) {
+    const code = err?.code;
+    if (code === ERROR_CODES.INCOMPATIBLE_NETWORK) {
+      alert('Wrong network — switch your wallet to testnet2.');
+    } else if (code === ERROR_CODES.UNSUPPORTED_PROTOCOL_VERSION) {
+      alert('Please update this app to connect to your wallet.');
+    } else {
+      alert('Connection failed: ' + err.message);
+    }
+  }
 };
 </script>
 ```
@@ -148,11 +162,15 @@ This prevents `"WebSocket is not open"` errors during disconnect races.
 
 ```typescript
 import { autoConnect } from '@unicitylabs/sphere-sdk/connect/browser';
+import { SPHERE_NETWORKS } from '@unicitylabs/sphere-sdk/connect';
 
-// One function — that's it
+// One function — that's it.
+// network is required by the v2 compatibility gate — the wallet rejects
+// the handshake with INCOMPATIBLE_NETWORK (4008) if it is missing or wrong.
 const result = await autoConnect({
   dapp: { name: 'My App', url: location.origin },
   walletUrl: 'https://sphere.unicity.network',
+  network: SPHERE_NETWORKS.testnet2,
   silent: true, // auto-reconnect without UI
 });
 
@@ -180,7 +198,7 @@ await result.disconnect();
 Always try `silent: true` first to avoid flashing the Connect button:
 ```typescript
 try {
-  const result = await autoConnect({ dapp, walletUrl, silent: true });
+  const result = await autoConnect({ dapp, walletUrl, network: SPHERE_NETWORKS.testnet2, silent: true });
   // Reconnected — origin was already approved
 } catch {
   // Not approved — show Connect button
@@ -206,9 +224,9 @@ import type { AutoConnectResult, DetectedTransport } from '@unicitylabs/sphere-s
 import { isInIframe, hasExtension, detectTransport } from '@unicitylabs/sphere-sdk/connect/browser';
 
 // Low-level (only if you need manual control)
-import { ConnectClient } from '@unicitylabs/sphere-sdk/connect';
+import { ConnectClient, ConnectError, SPHERE_NETWORKS, ERROR_CODES } from '@unicitylabs/sphere-sdk/connect';
 import { PostMessageTransport, ExtensionTransport } from '@unicitylabs/sphere-sdk/connect/browser';
-import type { ConnectTransport, PublicIdentity, RpcMethod, IntentAction, PermissionScope } from '@unicitylabs/sphere-sdk/connect';
+import type { ConnectTransport, NetworkInfo, PublicIdentity, RpcMethod, IntentAction, PermissionScope } from '@unicitylabs/sphere-sdk/connect';
 
 // Node.js
 import { WebSocketTransport } from '@unicitylabs/sphere-sdk/connect/nodejs';

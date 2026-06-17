@@ -224,6 +224,111 @@ const unsub = client.on('transfer:incoming', (data) => {
 unsub();
 ```
 
+## Protocol Version & Compatibility
+
+The Connect protocol is currently at **`2.0`** (`SPHERE_CONNECT_VERSION = '2.0'`).
+
+**Same MAJOR = compatible.** A dApp on `2.0` and a wallet on `2.1` interoperate. **Different MAJOR = rejected.** A v1 dApp attempting to connect to a v2 wallet receives `UNSUPPORTED_PROTOCOL_VERSION` (4007) and must update its SDK.
+
+The v1 → v2 cut is a one-time hard break. All dApps must update to SDK ≥ 0.9.x and declare `network` in `ConnectClientConfig`.
+
+## Network Configuration
+
+**Connect v2 requires every dApp to declare its target network.** The wallet rejects the handshake with `INCOMPATIBLE_NETWORK` (4008) if the network id does not match or if `network` is omitted.
+
+### SPHERE_NETWORKS
+
+Use `SPHERE_NETWORKS` (exported from `@unicitylabs/sphere-sdk/connect`) — single-sourced from `constants.NETWORKS` so the numeric id cannot drift from the embedded trust base.
+
+```typescript
+import { SPHERE_NETWORKS } from '@unicitylabs/sphere-sdk/connect';
+
+// With ConnectClient:
+const client = new ConnectClient({ /* ... */, network: SPHERE_NETWORKS.testnet2 });
+
+// With autoConnect:
+const result = await autoConnect({ /* ... */, network: SPHERE_NETWORKS.testnet2 });
+```
+
+`SPHERE_NETWORKS` currently exposes one entry: `testnet2 = { id: 4, name: 'testnet2' }`. Richer descriptor fields (`gatewayUrl`, `symbol`, `explorer`, `icon`) and runtime network switching are deferred. There is **no `switch_network` intent, no `network:changed` event, and no `switchNetwork()` method**.
+
+### NetworkInfo type
+
+```typescript
+interface NetworkInfo {
+  readonly id: number;    // canonical match key — RootTrustBase.networkId (testnet2 = 4)
+  readonly name?: string; // human-readable metadata only
+}
+```
+
+The wallet matches solely on `id`. Custom networks use the same shape: `network: { id, name }`.
+
+### ConnectClientConfig.network
+
+```typescript
+import { ConnectClient, SPHERE_NETWORKS } from '@unicitylabs/sphere-sdk/connect';
+
+const client = new ConnectClient({
+  transport,
+  dapp: { name: 'My App', url: location.origin },
+  network: SPHERE_NETWORKS.testnet2, // REQUIRED — omitting this causes INCOMPATIBLE_NETWORK (4008)
+  silent: false,
+});
+```
+
+After a successful connect, the wallet's echoed network is available via `client.walletNetwork` (`NetworkInfo | null`).
+
+### ConnectHostConfig.onConnectionRejected
+
+Wallet hosts can wire this callback to surface rejection reasons in the wallet UI. It is notify-only — the gate decision is already made when this fires.
+
+```typescript
+const host = new ConnectHost({
+  sphere, transport,
+  onConnectionRequest: async (dapp, permissions, silent, clientInfo) => { /* ... */ },
+  onIntent: async (action, params, session) => { /* ... */ },
+
+  // Called when the compatibility gate rejects a connection.
+  // Does NOT affect the decision. silent=true for auto-connect attempts.
+  onConnectionRejected: (dapp, error, silent) => {
+    if (!silent) showRejectionBanner(dapp?.name, error.message);
+  },
+});
+```
+
+Signature: `onConnectionRejected?(dapp: DAppMetadata | undefined, error: SphereRpcError, silent?: boolean): void`
+
+## ConnectError
+
+`client.connect()` rejects with a **`ConnectError`** when the compatibility gate refuses the connection.
+
+```typescript
+import { ConnectError, ERROR_CODES } from '@unicitylabs/sphere-sdk/connect';
+```
+
+`ConnectError` has:
+- `.code: number` — numeric error code
+- `.data?: unknown` — structured rejection details
+
+**Important:** discriminate on the numeric `.code`, not `instanceof ConnectError`. The `instanceof` check is unreliable when multiple bundle copies of the SDK are present.
+
+```typescript
+try {
+  await client.connect();
+} catch (e) {
+  const code = (e as { code?: number })?.code;
+  if (code === ERROR_CODES.INCOMPATIBLE_NETWORK) {
+    // data: { reason: 'network_incompatible', walletNetwork: { id: number }, clientNetwork: NetworkInfo | null }
+    showWrongNetwork((e as ConnectError).data);
+  } else if (code === ERROR_CODES.UNSUPPORTED_PROTOCOL_VERSION) {
+    // data: { reason: 'protocol_incompatible', walletProtocol: '2.0', clientProtocol: '1.0' }
+    showUpdateRequired((e as ConnectError).data);
+  } else {
+    showGenericError();
+  }
+}
+```
+
 ## Error Codes
 
 | Code | Name | Description |
@@ -239,6 +344,8 @@ unsub();
 | `4004` | `SESSION_EXPIRED` | Session TTL expired |
 | `4005` | `ORIGIN_BLOCKED` | Origin blocked by wallet |
 | `4006` | `RATE_LIMITED` | Too many requests |
+| `4007` | `UNSUPPORTED_PROTOCOL_VERSION` | Connect MAJOR version mismatch — dApp must update its SDK |
+| `4008` | `INCOMPATIBLE_NETWORK` | dApp targets a different network than the wallet, or omitted `network` |
 | `4100` | `INSUFFICIENT_BALANCE` | Not enough tokens |
 | `4101` | `INVALID_RECIPIENT` | Bad recipient address |
 | `4102` | `TRANSFER_FAILED` | Transfer execution failed |
@@ -259,10 +366,11 @@ try {
 ## Protocol Constants
 
 ```typescript
-import { HOST_READY_TYPE, HOST_READY_TIMEOUT } from '@unicitylabs/sphere-sdk/connect';
+import { SPHERE_CONNECT_VERSION, HOST_READY_TYPE, HOST_READY_TIMEOUT } from '@unicitylabs/sphere-sdk/connect';
 
-HOST_READY_TYPE    // 'sphere-connect:host-ready'
-HOST_READY_TIMEOUT // 30000 (ms)
+SPHERE_CONNECT_VERSION // '2.0'
+HOST_READY_TYPE        // 'sphere-connect:host-ready'
+HOST_READY_TIMEOUT     // 30000 (ms)
 ```
 
 ## Import Paths
@@ -275,9 +383,9 @@ import type { AutoConnectResult, DetectedTransport } from '@unicitylabs/sphere-s
 // Detection utilities (also used internally by autoConnect)
 import { isInIframe, hasExtension, detectTransport } from '@unicitylabs/sphere-sdk/connect/browser';
 
-// Core protocol (ConnectClient, types, constants)
-import { ConnectClient, RPC_METHODS, INTENT_ACTIONS, PERMISSION_SCOPES, ERROR_CODES } from '@unicitylabs/sphere-sdk/connect';
-import type { ConnectTransport, PublicIdentity, RpcMethod, IntentAction, PermissionScope, ConnectResult } from '@unicitylabs/sphere-sdk/connect';
+// Core protocol (ConnectClient, ConnectError, types, constants)
+import { ConnectClient, ConnectError, SPHERE_NETWORKS, ERROR_CODES, RPC_METHODS, INTENT_ACTIONS, PERMISSION_SCOPES } from '@unicitylabs/sphere-sdk/connect';
+import type { ConnectTransport, ConnectHostConfig, NetworkInfo, PublicIdentity, RpcMethod, IntentAction, PermissionScope, ConnectResult } from '@unicitylabs/sphere-sdk/connect';
 
 // Browser transports (low-level — only if not using autoConnect)
 import { PostMessageTransport, ExtensionTransport } from '@unicitylabs/sphere-sdk/connect/browser';

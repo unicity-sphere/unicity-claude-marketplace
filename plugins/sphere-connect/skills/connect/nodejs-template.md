@@ -13,7 +13,7 @@ npm install @unicitylabs/sphere-sdk ws
 ```typescript
 // src/lib/sphere-client.ts
 
-import { ConnectClient, RPC_METHODS, INTENT_ACTIONS } from '@unicitylabs/sphere-sdk/connect';
+import { ConnectClient, SPHERE_NETWORKS, ERROR_CODES, RPC_METHODS, INTENT_ACTIONS } from '@unicitylabs/sphere-sdk/connect';
 import { WebSocketTransport } from '@unicitylabs/sphere-sdk/connect/nodejs';
 import type { RpcMethod, IntentAction, PublicIdentity, PermissionScope } from '@unicitylabs/sphere-sdk/connect';
 import WebSocket from 'ws';
@@ -65,8 +65,28 @@ export async function connectToSphere(config: SphereClientConfig): Promise<Spher
 
   await transport.connect();
 
-  const client = new ConnectClient({ transport, dapp: config.dapp });
-  const result = await client.connect();
+  // network is required by the v2 compatibility gate; wallet rejects with
+  // INCOMPATIBLE_NETWORK (4008) if this does not match its active network.
+  const client = new ConnectClient({
+    transport,
+    dapp: config.dapp,
+    network: SPHERE_NETWORKS.testnet2,
+  });
+
+  let result;
+  try {
+    result = await client.connect();
+  } catch (err) {
+    transport.destroy();
+    const code = (err as { code?: number })?.code;
+    if (code === ERROR_CODES.INCOMPATIBLE_NETWORK) {
+      throw new Error('Wallet is on a different network — ensure the wallet uses testnet2.');
+    }
+    if (code === ERROR_CODES.UNSUPPORTED_PROTOCOL_VERSION) {
+      throw new Error('Protocol version mismatch — update @unicitylabs/sphere-sdk to the latest version.');
+    }
+    throw err;
+  }
 
   return {
     identity: result.identity,

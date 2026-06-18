@@ -12,8 +12,6 @@ Complete reference for the Connect protocol. Use this when generating code to en
 | `sphere_getAssets` | `balance:read` | Assets grouped by coin |
 | `sphere_getTokens` | `tokens:read` | Individual tokens |
 | `sphere_getHistory` | `history:read` | L3 transaction history |
-| `sphere_l1GetBalance` | `l1:read` | L1 (ALPHA) balance |
-| `sphere_l1GetHistory` | `l1:read` | L1 transaction history |
 | `sphere_resolve` | `resolve:peer` | Resolve nametag/address to PeerInfo |
 | `sphere_subscribe` | `events:subscribe` | Subscribe to real-time events |
 | `sphere_unsubscribe` | `events:subscribe` | Unsubscribe from events |
@@ -37,7 +35,6 @@ const peer = await client.query('sphere_resolve', { identifier: '@alice' });
 | Action | Permission Scope | User Sees |
 |--------|-----------------|-----------|
 | `send` | `transfer:request` | Send token modal |
-| `l1_send` | `l1:transfer` | L1 send modal |
 | `dm` | `dm:request` | Direct message modal |
 | `payment_request` | `payment:request` | Payment request modal |
 | `receive` | `identity:read` | Receive address/QR |
@@ -48,9 +45,6 @@ const peer = await client.query('sphere_resolve', { identifier: '@alice' });
 ```typescript
 // Send L3 tokens
 await client.intent('send', { recipient: '@alice', amount: '1000000', coinId: 'UCT' });
-
-// Send L1 transaction
-await client.intent('l1_send', { to: 'alpha1...', amount: '100000', feeRate: 5 });
 
 // Send direct message
 await client.intent('dm', { recipient: '@bob', message: 'Hello!' });
@@ -79,11 +73,9 @@ const { tokenId } = await client.intent('mint', { coinId: '111111111111111111111
 | `balance:read` | Balance, fiat balance, assets queries |
 | `tokens:read` | Individual token list |
 | `history:read` | Transaction history |
-| `l1:read` | L1 balance & history |
 | `events:subscribe` | Real-time event subscriptions |
 | `resolve:peer` | Nametag/address resolution |
 | `transfer:request` | Send L3 tokens intent |
-| `l1:transfer` | Send L1 transaction intent |
 | `dm:request` | Send DM intent |
 | `dm:read` | Read conversations, messages, unread count |
 | `payment:request` | Payment request intent |
@@ -190,7 +182,7 @@ Events below require `sphere_subscribe` or `client.on()`. The wallet proxies `Sp
 ### Identity & Addresses
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `identity:changed` | `{ l1Address, directAddress, chainPubkey, nametag, addressIndex }` | Address switched |
+| `identity:changed` | `{ directAddress, chainPubkey, nametag, addressIndex }` | Address switched |
 | `nametag:registered` | `{ nametag, addressIndex }` | Nametag registered |
 | `nametag:recovered` | `{ nametag }` | Nametag recovered from Nostr |
 | `address:activated` | `{ address: TrackedAddress }` | New address tracked |

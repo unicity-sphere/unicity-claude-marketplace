@@ -18,7 +18,7 @@ Complete reference for the Connect protocol. Use this when generating code to en
 | `sphere_getConversations` | `dm:read` | Get DM conversation list |
 | `sphere_getMessages` | `dm:read` | Get messages in a conversation |
 | `sphere_getDMUnreadCount` | `dm:read` | Get unread DM count |
-| `sphere_markAsRead` | `dm:read` | Mark messages as read |
+| `sphere_markAsRead` | `dm:manage` | Mark messages as read |
 | `sphere_disconnect` | *(none)* | Disconnect session |
 
 ### Query usage
@@ -44,13 +44,13 @@ const peer = await client.query('sphere_resolve', { identifier: '@alice' });
 ### Intent usage
 ```typescript
 // Send L3 tokens
-await client.intent('send', { recipient: '@alice', amount: '1000000', coinId: 'UCT' });
+await client.intent('send', { to: '@alice', amount: '10', coinId: '<lowercase 64-hex coin id>' });
 
 // Send direct message
-await client.intent('dm', { recipient: '@bob', message: 'Hello!' });
+await client.intent('dm', { to: '@bob', message: 'Hello!' });
 
 // Create payment request
-await client.intent('payment_request', { recipient: '@bob', amount: '500000', coinId: 'UCT', message: 'For order #42' });
+await client.intent('payment_request', { to: '@bob', amount: '50', coinId: '<lowercase 64-hex coin id>', message: 'For order #42' });
 
 // Show receive address
 await client.intent('receive', {});
@@ -65,6 +65,11 @@ const { tokenId } = await client.intent('mint', { coinId: '111111111111111111111
 > **Backend auth pattern:** Use `sign_message` to authenticate users to your server via challenge-response → JWT.
 > See [backend-auth.md](backend-auth.md) for full implementation.
 
+> **Note:** invoice/accounting intents (`create_invoice`, `pay_invoice`, …) and the invoice
+> queries (`sphere_getInvoices`, `sphere_getInvoiceStatus`) exist in the Connect protocol but are
+> **experimental and not supported by the Sphere wallet** — do not generate calls to them.
+> `coinId` is the canonical lowercase 64-hex id (a symbol like `UCT` is rejected).
+
 ## Permission Scopes
 
 | Scope | Grants access to |
@@ -78,6 +83,7 @@ const { tokenId } = await client.intent('mint', { coinId: '111111111111111111111
 | `transfer:request` | Send L3 tokens intent |
 | `dm:request` | Send DM intent |
 | `dm:read` | Read conversations, messages, unread count |
+| `dm:manage` | Mark DM messages as read |
 | `payment:request` | Payment request intent |
 | `sign:request` | Sign message intent |
 | `mint:request` | Mint (self-mint a fungible token) intent |
@@ -351,7 +357,7 @@ try {
 ### Error handling
 ```typescript
 try {
-  await client.intent('send', { recipient: '@alice', amount: '1000000', coinId: 'UCT' });
+  await client.intent('send', { to: '@alice', amount: '10', coinId: '<lowercase 64-hex coin id>' });
 } catch (err) {
   if (err.code === 4003) console.log('User rejected the transaction');
   else if (err.code === 4100) console.log('Insufficient balance');

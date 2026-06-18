@@ -44,7 +44,7 @@ export interface SphereClient {
  *   });
  *
  *   const balance = await client.query('sphere_getBalance');
- *   await client.intent('send', { recipient: '@alice', amount: '1000000', coinId: 'UCT' });
+ *   await client.intent('send', { to: '@alice', amount: '10', coinId: '<lowercase 64-hex coin id>' });
  *   await client.disconnect();
  */
 export async function connectToSphere(config: SphereClientConfig): Promise<SphereClient> {
@@ -122,7 +122,7 @@ const balance = await client.query(RPC_METHODS.GET_BALANCE);
 console.log('Balance:', balance);
 
 // Intent
-await client.intent('send', { recipient: '@bob', amount: '500000', coinId: 'UCT' });
+await client.intent('send', { to: '@bob', amount: '50', coinId: '<lowercase 64-hex coin id>' });
 
 // Events
 client.on('transfer:incoming', (data) => console.log('Received:', data));

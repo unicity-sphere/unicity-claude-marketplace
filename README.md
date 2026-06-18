@@ -24,6 +24,22 @@ In Claude Code interactive mode, use the `/plugin` command:
 
 In the interactive UI, switch to the **Discover** tab to find and install `sphere-connect`.
 
+## Updating
+
+Plugins from third-party marketplaces (like this one) do **not** auto-update by default — you control when new versions are pulled.
+
+```bash
+# 1. Refresh the marketplace catalog from GitHub
+/plugin marketplace update unicity-sphere
+
+# 2. Update an installed plugin to the latest version
+/plugin update sphere-connect@unicity-sphere
+```
+
+Then run `/reload-plugins` (or restart Claude Code) to apply it in your current session.
+
+To get future updates automatically, enable it once per marketplace: `/plugin` → **Marketplaces** → `unicity-sphere` → **Enable auto-update**.
+
 ## Available Plugins
 
 | Plugin | Category | Description |

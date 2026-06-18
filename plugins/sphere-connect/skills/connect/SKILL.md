@@ -75,7 +75,7 @@ function App() {
 
 // In your components:
 const balance = await wallet.query('sphere_getBalance');
-await wallet.intent('send', { recipient: '@alice', amount: '1000000', coinId: 'UCT' });
+await wallet.intent('send', { to: '@alice', amount: '10', coinId: '<lowercase 64-hex coin id>' });
 const unsub = wallet.on('transfer:incoming', (data) => console.log('Received:', data));
 ```
 
@@ -175,7 +175,7 @@ const result = await autoConnect({
 });
 
 result.client.query('sphere_getBalance');
-result.client.intent('send', { recipient: '@alice', amount: '1000000', coinId: 'UCT' });
+result.client.intent('send', { to: '@alice', amount: '10', coinId: '<lowercase 64-hex coin id>' });
 result.client.on('transfer:incoming', (data) => console.log(data));
 await result.disconnect();
 ```

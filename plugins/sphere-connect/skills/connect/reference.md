@@ -42,6 +42,7 @@ const peer = await client.query('sphere_resolve', { identifier: '@alice' });
 | `payment_request` | `payment:request` | Payment request modal |
 | `receive` | `identity:read` | Receive address/QR |
 | `sign_message` | `sign:request` | Sign message modal |
+| `mint` | `mint:request` | Mint confirmation modal |
 
 ### Intent usage
 ```typescript
@@ -62,6 +63,9 @@ await client.intent('receive', {});
 
 // Sign a message (returns hex signature string)
 const sig = await client.intent('sign_message', { message: 'I agree to the Terms of Service' });
+
+// Self-mint a fungible token to the connected wallet (coinId is lowercase hex; works where the network allows self-mint, e.g. testnet2)
+const { tokenId } = await client.intent('mint', { coinId: '1111111111111111111111111111111111111111111111111111111111111111', amount: '1000000' });
 ```
 
 > **Backend auth pattern:** Use `sign_message` to authenticate users to your server via challenge-response → JWT.
@@ -84,6 +88,7 @@ const sig = await client.intent('sign_message', { message: 'I agree to the Terms
 | `dm:read` | Read conversations, messages, unread count |
 | `payment:request` | Payment request intent |
 | `sign:request` | Sign message intent |
+| `mint:request` | Mint (self-mint a fungible token) intent |
 
 **Default (always granted):** `identity:read`
 

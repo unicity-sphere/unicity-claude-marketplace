@@ -43,14 +43,15 @@ const peer = await client.query('sphere_resolve', { identifier: '@alice' });
 
 ### Intent usage
 ```typescript
-// Send L3 tokens
-await client.intent('send', { to: '@alice', amount: '10', coinId: '<lowercase 64-hex coin id>' });
+// Send L3 tokens. amount is in BASE UNITS (smallest unit), a string — convert a
+// human amount with parseTokenAmount(human, decimals) (or ethers/viem parseUnits).
+await client.intent('send', { to: '@alice', amount: '1000000000000000000', coinId: '<lowercase 64-hex coin id>' }); // = 1 of an 18-decimals coin
 
 // Send direct message
 await client.intent('dm', { to: '@bob', message: 'Hello!' });
 
-// Create payment request
-await client.intent('payment_request', { to: '@bob', amount: '50', coinId: '<lowercase 64-hex coin id>', message: 'For order #42' });
+// Create payment request (amount in base units, like send)
+await client.intent('payment_request', { to: '@bob', amount: '5000000000000000000', coinId: '<lowercase 64-hex coin id>', message: 'For order #42' });
 
 // Show receive address
 await client.intent('receive', {});
@@ -69,6 +70,10 @@ const { tokenId } = await client.intent('mint', { coinId: '111111111111111111111
 > queries (`sphere_getInvoices`, `sphere_getInvoiceStatus`) exist in the Connect protocol but are
 > **experimental and not supported by the Sphere wallet** — do not generate calls to them.
 > `coinId` is the canonical lowercase 64-hex id (a symbol like `UCT` is rejected).
+
+> **Amount units:** `send` / `payment_request` / `mint` all take `amount` in **base units**
+> (the smallest indivisible unit), as a string — never whole tokens. Convert a user's human
+> amount at your app's edge with `parseTokenAmount(human, decimals)` (or ethers/viem `parseUnits`).
 
 ## Permission Scopes
 
@@ -357,7 +362,7 @@ try {
 ### Error handling
 ```typescript
 try {
-  await client.intent('send', { to: '@alice', amount: '10', coinId: '<lowercase 64-hex coin id>' });
+  await client.intent('send', { to: '@alice', amount: '1000000000000000000', coinId: '<lowercase 64-hex coin id>' }); // base units
 } catch (err) {
   if (err.code === 4003) console.log('User rejected the transaction');
   else if (err.code === 4100) console.log('Insufficient balance');

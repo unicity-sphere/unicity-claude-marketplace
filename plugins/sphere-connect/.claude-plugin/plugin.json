@@ -1,7 +1,7 @@
 {
   "name": "sphere-connect",
   "description": "Connect your dApp to a Sphere wallet in minutes. Auto-detects extension/iframe/popup, handles reconnect on page reload, provides query/intent/event API. Supports React, Node.js, and vanilla JS.",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "author": {
     "name": "Unicity Labs"
   },

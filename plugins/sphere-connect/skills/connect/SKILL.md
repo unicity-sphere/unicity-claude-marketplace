@@ -75,7 +75,9 @@ function App() {
 
 // In your components:
 const balance = await wallet.query('sphere_getBalance');
-await wallet.intent('send', { to: '@alice', amount: '1000000000000000000', coinId: '<lowercase 64-hex coin id>' }); // amount in base units
+const sent = await wallet.intent('send', { to: '@alice', amount: '1000000000000000000', coinId: '<lowercase 64-hex coin id>' }); // amount in base units
+// sent: { success, transferId?, status, deliveryPending } — deliveryPending=true means
+// final on-chain, delivery retries automatically; NEVER re-send on it (double-pay).
 const unsub = wallet.on('transfer:incoming', (data) => console.log('Received:', data));
 ```
 

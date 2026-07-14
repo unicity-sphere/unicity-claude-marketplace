@@ -2,6 +2,13 @@
 
 This template creates a Sphere Connect client for Node.js applications using WebSocket transport.
 
+> **This is the dApp side** (queries + intents against a user's wallet). If your Node.js
+> process runs its **own wallet that must RECEIVE tokens** (e.g. it owns the nametag your
+> dApp sends to), a bare `createNodeProviders` wallet cannot see deliveries from
+> wallet-api-composed senders (including the hosted Sphere wallet) — it must compose the
+> wallet-api delivery rail. See the "Server-side (Node.js) RECIPIENTS" note in
+> [reference.md](reference.md) and the SDK's `docs/QUICKSTART-NODEJS.md`.
+
 ## Dependencies
 
 ```bash

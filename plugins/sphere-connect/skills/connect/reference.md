@@ -45,7 +45,10 @@ const peer = await client.query('sphere_resolve', { identifier: '@alice' });
 ```typescript
 // Send L3 tokens. amount is in BASE UNITS (smallest unit), a string — convert a
 // human amount with parseTokenAmount(human, decimals) (or ethers/viem parseUnits).
-await client.intent('send', { to: '@alice', amount: '1000000000000000000', coinId: '<lowercase 64-hex coin id>' }); // = 1 of an 18-decimals coin
+const result = await client.intent('send', { to: '@alice', amount: '1000000000000000000', coinId: '<lowercase 64-hex coin id>' }); // = 1 of an 18-decimals coin
+// result: { success: true, transferId?: string, status: string, deliveryPending: boolean }
+// deliveryPending=true → the spend is FINAL on-chain, recipient delivery is queued and
+// retries automatically. NEVER re-send on deliveryPending — that would double-pay.
 
 // Send direct message
 await client.intent('dm', { to: '@bob', message: 'Hello!' });
@@ -74,6 +77,29 @@ const { tokenId } = await client.intent('mint', { coinId: '111111111111111111111
 > **Amount units:** `send` / `payment_request` / `mint` all take `amount` in **base units**
 > (the smallest indivisible unit), as a string — never whole tokens. Convert a user's human
 > amount at your app's edge with `parseTokenAmount(human, decimals)` (or ethers/viem `parseUnits`).
+
+> **Server-side (Node.js) RECIPIENTS of sends:** a wallet built with bare
+> `createNodeProviders` only listens on the Nostr transport and will **never receive**
+> token deliveries from wallet-api-composed senders — which includes the hosted Sphere
+> wallet (it delivers via the wallet-api mailbox, not Nostr). If your backend wallet must
+> receive tokens (e.g. it owns the nametag your dApp sends to via `intent('send', …)`),
+> compose the wallet-api delivery rail:
+> ```typescript
+> import { createNodeProviders } from '@unicitylabs/sphere-sdk/impl/nodejs';
+> import { createOwnStorageWalletApiProviders } from '@unicitylabs/sphere-sdk/impl/shared/wallet-api';
+>
+> const base = createNodeProviders({ network: 'testnet', dataDir: './wallet-data' });
+> const providers = createOwnStorageWalletApiProviders(base, {
+>   baseUrl: 'https://wallet-api.unicity.network',
+>   network: 'testnet2',
+>   deviceId: 'my-server',        // persist a stable id
+> });
+> const { sphere } = await Sphere.init({ ...providers, network: 'testnet' /* + identity */ });
+> ```
+> Symptoms of the missing composition: sender confirms with a Transfer ID, but the recipient's
+> `getHistory()` stays empty, `receive()` returns `{ transfers: [] }` and `transfer:incoming`
+> never fires. Deposits are not lost — they stay claimable and are picked up on the first
+> pump after the rail is composed. See the SDK's `docs/QUICKSTART-NODEJS.md`.
 
 ## Permission Scopes
 

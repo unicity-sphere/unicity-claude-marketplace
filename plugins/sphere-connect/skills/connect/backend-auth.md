@@ -326,7 +326,7 @@ The reference implementation of this pattern lives in [`sphere-api/src/services/
 
 ### General
 
-- **Never derive `directAddress` from `chainPubkey` on the backend.** It cannot be done — the SDK derives `directAddress` from `SHA256(privkey)`, not from `chainPubkey`. Always resolve via `sphere.resolve(chainPubkey)` (Nostr binding event).
+- **Key identity on `chainPubkey`, never on `directAddress`.** `directAddress` is not mathematically derivable from `chainPubkey` — the SDK derives it from `SHA256(privkey)`, which is private. It can only be *looked up*, via `sphere.resolve(chainPubkey)` (Nostr binding event). Since state-transition v2 the chain public key is the identity: it is what the signature recovers to. Resolve `directAddress` only when you actually need to display it — never as the account key.
 - **Body-claimed identifiers are advisory at best.** Old API consumers may still send `directAddress` / `chainPubkey` in the body; accept them only for backward-compat parsing and ignore them when establishing identity.
 - **Challenge is single-use** — delete after verify.
 - **Challenge expires in 5 minutes** — prevents stale signature reuse.

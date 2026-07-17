@@ -59,18 +59,18 @@ await client.intent('send', { to: '@alice', amount: '1000000000000000000', coinI
 }
 ```
 
-`deliveryPending: true` means the spend **certified on-chain** but delivery to the recipient has not landed;
-the wallet journaled it and will retry under the original transfer. It arrives as
+`deliveryPending: true` means the spend is committed on-chain — or, on possibly-certified resolutions, may already
+be — but delivery to the recipient has not landed; the wallet journaled it and will retry under the original transfer. It arrives as
 `{ success: true, status: 'pending', deliveryPending: true }` — a success **with no `transferId`**, because
 pending results carry an empty id by design.
 
 **Never re-send on `deliveryPending`.** A second `send` consumes a different source token and pays twice.
-Treat it as a pending success and show the user that the money already moved.
+Treat it as a pending success and tell the user the money may already have moved (at minimum it is in flight and must not be re-sent).
 
 ```typescript
 const result = await client.intent('send', { to, amount, coinId });
 if (result.deliveryPending) {
-  // Money moved. Delivery is queued. Do NOT retry.
+  // Money is sent (or may already be). Delivery is queued. Do NOT retry.
   showPendingDelivery(result.status);
 } else if (result.transferId) {
   showDelivered(result.transferId);

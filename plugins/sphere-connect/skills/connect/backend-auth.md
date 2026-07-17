@@ -8,7 +8,9 @@ How to authenticate users to a backend server using their Sphere wallet — chal
 
 ## Critical: don't trust any identifier from the request body
 
-A naive backend reads `{ directAddress, chainPubkey, signature }` from the body and trusts the claimed addresses. This is broken — an attacker can sign with their own key while claiming someone else's `directAddress`. Past versions of this skill recommended an SDK helper (`verifySphereAuth` / `computeDirectAddressFromChainPubkey`) for this; both are **removed** because `directAddress` cannot in fact be derived from `chainPubkey` — the SDK derives it from `SHA256(privkey)`, which is private.
+A naive backend reads `{ directAddress, chainPubkey, signature }` from the body and trusts the claimed addresses. This is broken — an attacker can sign with their own key while claiming someone else's `directAddress`. Trust nothing from the body: **recover** the public key from the signature instead.
+
+**Key the user on `chainPubkey`, not on `directAddress`.** Since state-transition v2 the chain public key is the identity: it is what the signature recovers to, and it is what the wallet itself now shows users (the `DIRECT://` address is deliberately hidden across the Sphere UI). A `directAddress` can be obtained, but building on it is the wrong path — it adds a derivation you do not need and cannot verify from a signature alone. Past versions of this skill recommended the SDK helpers `verifySphereAuth` / `computeDirectAddressFromChainPubkey`; both have since been **removed from the SDK**. Use `recoverPubkeyFromSignature` and treat the recovered `chainPubkey` as the account key.
 
 The correct flow:
 

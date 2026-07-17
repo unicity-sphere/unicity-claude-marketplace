@@ -90,6 +90,7 @@ Verifying a signature needs only the two SDK crypto helpers below — **no `Sphe
 // src/server.ts
 import { randomBytes } from 'node:crypto';
 import express from 'express';
+import jwt from 'jsonwebtoken';
 import { recoverPubkeyFromSignature, verifySignedMessage } from '@unicitylabs/sphere-sdk';
 import { buildChallenge, reconstructChallenge, type ChallengeRecord } from './challenge';
 
@@ -98,6 +99,9 @@ app.use(express.json());
 
 const CHALLENGE_TTL_SECONDS = 5 * 60;
 const AUTH_DOMAIN = process.env.AUTH_DOMAIN ?? 'localhost';
+// Set a real secret (long random value from a secrets manager) in production — this
+// fallback is only safe for local dev.
+const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-only-change-me';
 
 // Single-use, expiring nonce store. In production this is Redis or a TTL-indexed
 // DB collection shared across instances — but keeps these same two properties:
@@ -142,14 +146,15 @@ app.post('/verify', (req, res) => {
   // Identity is keyed ONLY on `recovered` — never on stored.chainPubkey (the hint
   // the frontend supplied to bind the challenge) and never on anything else the
   // client sent. This recovery step is the entire proof.
-  const token = signJwt({ sub: recovered }, { expiresIn: '2h' });
+  const token = jwt.sign({ sub: recovered }, JWT_SECRET, { expiresIn: 7200 }); // seconds (2h)
   res.json({ jwt: token, chainPubkey: recovered });
 });
 ```
 
-Install the SDK (any 0.7.2+ release):
+Install the SDK (any 0.7.2+ release) plus the two runtime deps the code above imports — `express` and `jsonwebtoken` (add `@types/jsonwebtoken` as a dev dep if your project is TypeScript, as shown here):
 ```bash
-npm install @unicitylabs/sphere-sdk
+npm install @unicitylabs/sphere-sdk express jsonwebtoken
+npm install -D @types/jsonwebtoken
 ```
 
 ### Optional production step: resolving a `directAddress`
@@ -267,6 +272,12 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 ## Protecting routes on the backend
 
 ```typescript
+import jwt from 'jsonwebtoken';
+
+// Same secret used to sign the token in /verify above — set a real secret via
+// JWT_SECRET in production, this fallback is only safe for local dev.
+const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-only-change-me';
+
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) return res.status(401).json({ error: 'unauthorized' });

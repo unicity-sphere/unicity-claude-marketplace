@@ -6,6 +6,17 @@ Uses SDK's `autoConnect()` for automatic transport detection, silent reconnect, 
 
 Requires `@unicitylabs/sphere-sdk` installed. No separate detection file needed.
 
+## Testing against the real (hosted) wallet
+
+`autoConnect` falls back to a **popup** when the dApp isn't running inside a
+wallet — and the popup path **does NOT work against the hosted wallet
+(`https://sphere.unicity.network`): it returns `403`.** To test a *local* dApp
+against the **live** wallet, load it as a **custom agent** at
+**https://sphere.unicity.network/agents/custom** so the wallet embeds it in an
+**iframe** (the P1 transport). Popup only works for a wallet the developer runs
+themselves (e.g. at `localhost:5173`). Tell the developer this when they ask how
+to try their dApp with a real wallet.
+
 ## Template
 
 ```typescript

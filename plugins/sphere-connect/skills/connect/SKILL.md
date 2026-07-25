@@ -127,16 +127,40 @@ document.getElementById('connect').onclick = async () => {
 
 ### Wallet events (critical — always handle)
 
-The wallet pushes two events automatically after connection — **no `sphere_subscribe` needed**:
+The wallet pushes four events automatically after connection — **no `sphere_subscribe` needed**:
 
-- **`wallet:locked`** — wallet logged out, popup closed/refreshed, or session ended. **Handling depends on the transport:**
-  - **Popup mode:** full disconnect — clear client, transport, and saved session. Do NOT close the popup window.
-  - **Extension / iframe mode:** set `isWalletLocked = true` and wait. The host is still alive; when the user unlocks, `identity:changed` fires and clears the flag.
-- **`identity:changed`** — user switched address (or unlocked after lock). **Must update displayed identity and clear locked state.**
+- **`wallet:locked`** — the wallet is locked. **The session, the permissions and the transport are
+  still alive** (Connect ≥ 2.1); requests answer `WALLET_LOCKED` (4009) with
+  `data: { reason: 'locked' }` until it is unlocked. Set a flag, show a locked state, and **do
+  not** disconnect or clear the saved session — in any transport mode. Only if
+  `client.walletProtocol` is `2.0` does this still mean "session revoked".
+- **`wallet:unlocked`** — the same session continues; no re-handshake, no re-approval, and nothing
+  to re-subscribe (the host re-arms your subscriptions before pushing this). The payload carries
+  `{ identity? }`: **compare `identity.chainPubkey` with the one you connected as before resuming
+  anything**, because the lock screen's "restore from recovery phrase" installs a different seed.
+- **`wallet:disconnected`** — the session is gone (logout, wallet deleted, expiry, a different seed
+  behind the lock screen). This is the only one that means "clear everything and re-handshake".
+- **`identity:changed`** — user switched address. Update the displayed identity.
 
-> **Host-side note:** When the wallet's `Sphere` instance is destroyed, the host must call `notifyWalletLocked()` to push the event to connected dApps.
+While locked, `sphere_getIdentity`, `sphere_subscribe`, `sphere_unsubscribe` and
+`sphere_disconnect` are still answered normally; everything else — including every intent — gets
+4009 in the same tick. Balances, tokens and history are never served and never cached.
 
-Additionally, wrap `query()`/`intent()` calls with error handling: if the transport is dead (popup crashed, network lost), auto-disconnect as a fallback. See [react-template.md](react-template.md) for implementation.
+A resume handshake whose `sessionId` matches **succeeds** while the wallet is locked and the
+result carries `locked: true`, so check `result.locked` after `connect()`.
+
+> **Host-side note:** a wallet maps each transition to exactly one verb — `setLocked()` for a lock
+> (session preserved), `updateSphere()` for an unlock, `revokeSession()` for a logout,
+> `setUnavailable()` when Sphere is gone for a non-lock reason. `notifyWalletLocked()` has been
+> **removed**: its old meaning was *revoke* and its new meaning would be *lock*, so an alias would
+> have inverted every call site silently.
+>
+> **The unlock UI is raised by the wallet, from its own chrome, only after a human clicks.** No
+> dApp request — query, intent or handshake — can raise the password field. A locked request
+> lights a passive badge and nothing more.
+
+Additionally, classify a failed `query()`/`intent()` by the numeric `.code`, never by the message
+text. See [react-template.md](react-template.md) for implementation.
 
 ### Session persistence (popup mode)
 

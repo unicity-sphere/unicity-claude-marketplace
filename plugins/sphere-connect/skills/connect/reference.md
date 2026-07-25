@@ -97,60 +97,99 @@ const { tokenId } = await client.intent('mint', { coinId: '111111111111111111111
 
 ## Wallet Events (auto-pushed)
 
-These events are pushed automatically by `ConnectHost` — **no `sphere_subscribe` needed**. Always handle them.
+These events are pushed automatically by `ConnectHost` — **no `sphere_subscribe` needed**. Always handle them. Routing one through `sphere_subscribe` is refused, because `Sphere.on()` would accept the name and silently never emit.
 
 | Event | Constant | Payload | Description |
 |-------|----------|---------|-------------|
-| `wallet:locked` | `WALLET_EVENTS.LOCKED` | `{}` | Wallet logged out or session ended. Handling differs by transport — see below. |
-| `identity:changed` | `WALLET_EVENTS.IDENTITY_CHANGED` | `PublicIdentity` | User switched address. dApp should update displayed identity. Also signals unlock after a `wallet:locked` in extension/iframe mode. |
+| `wallet:locked` | `WALLET_EVENTS.LOCKED` | `{}` | Wallet locked. **The session is still alive** — requests answer `WALLET_LOCKED` (4009) until unlock. Do not disconnect. |
+| `wallet:unlocked` | `WALLET_EVENTS.UNLOCKED` | `{ identity?: PublicIdentity }` | Same session resumed; subscriptions already re-armed by the host. Compare `identity.chainPubkey` before resuming anything. |
+| `wallet:disconnected` | `WALLET_EVENTS.DISCONNECTED` | `{}` | Session destroyed (logout, wallet deleted, expiry, a different seed behind the lock screen). Clear state and re-handshake. |
+| `identity:changed` | `WALLET_EVENTS.IDENTITY_CHANGED` | `PublicIdentity` | User switched address. Update the displayed identity. |
 
-### Popup vs Extension/Iframe: different LOCKED handling
+### The lock is a state, not a teardown
 
-The `wallet:locked` event means different things depending on the transport:
+Handling does **not** depend on the transport any more. In popup, extension and iframe mode alike
+a lock preserves the session; only `wallet:disconnected` ends it.
 
-| Transport | What happened | Correct response |
-|-----------|--------------|-----------------|
-| **Popup** | Wallet was destroyed (logged out, navigated away). The popup window may still exist but the Sphere instance is gone. | Full disconnect: clear client, transport, and saved session. Do **not** programmatically close the popup. |
-| **Extension / Iframe** | Wallet is locked but the host (service worker / parent frame) is still alive. | Set a `isWalletLocked` flag and wait. When the user unlocks, the wallet fires `identity:changed` which clears the flag. |
+| Transport | On `wallet:locked` |
+|-----------|--------------------|
+| **Popup** | Keep the client, the transport and the saved `sessionId`. Do **not** close the popup — the user unlocks in it. |
+| **Extension / Iframe** | Identical: set the flag and wait for `wallet:unlocked`. |
 
-> **Host-side:** When the wallet's `Sphere` instance is destroyed (logout, lock), the host **must** call `notifyWalletLocked()` on the `ConnectHost` to push this event to all connected dApps. Forgetting this call leaves dApps in a stale connected state.
+Served while locked: `sphere_getIdentity` (from the wallet's frozen snapshot), `sphere_subscribe`,
+`sphere_unsubscribe`, `sphere_disconnect`. Everything else, and every intent, is answered 4009 in
+the same tick — the host never parks a request and never waits for a human. Balances, tokens and
+history are never served and never cached.
+
+A resume handshake whose `sessionId` matches **succeeds** while locked and the response carries
+`locked: true` (`ConnectResult.locked`, and `client.walletLocked`). Any handshake while locked is
+forced silent, so an origin without an approval still gets the usual empty refusal and learns
+nothing about the lock.
+
+> **Talking to a 2.0 wallet:** the protocol is `2.1`, and the gate compares MAJOR only, so a `2.0`
+> wallet still connects — but there `wallet:locked` also revoked the session and `wallet:unlocked`
+> never arrives. Read `client.walletProtocol` (the version the wallet reported at handshake) and
+> fall back to a full teardown when its MINOR is below 1. Treat an unknown version as legacy.
+
+> **Host-side:** a wallet calls `setLocked()` for a lock (session preserved), `updateSphere()` for
+> an unlock, `revokeSession()` for a logout, `setUnavailable()` when Sphere is gone for a non-lock
+> reason. `notifyWalletLocked()` has been **removed**, not aliased — its old meaning was the
+> opposite of its new one. The unlock UI is raised by the wallet from its own chrome after a human
+> click; no dApp request may raise the password field.
 
 ```typescript
 import { WALLET_EVENTS } from '@unicitylabs/sphere-sdk/connect';
 
-// Handle differently based on transport
+// Same handling in every transport mode.
 client.on(WALLET_EVENTS.LOCKED, () => {
-  if (transportType === 'popup') {
-    // Popup: full disconnect — wallet instance is gone
-    disconnect();
-  } else {
-    // Extension / iframe: wallet locked, host still alive — wait for unlock
-    setIsWalletLocked(true);
+  setIsWalletLocked(true);            // keep client, transport and sessionId
+});
+
+client.on(WALLET_EVENTS.UNLOCKED, (data) => {
+  const next = (data as { identity?: PublicIdentity }).identity ?? null;
+  if (!next || next.chainPubkey !== connectedIdentity.chainPubkey) {
+    setWalletChanged(true);           // a DIFFERENT seed came back — resume nothing
+    setIsWalletLocked(false);
+    return;
   }
+  setIsWalletLocked(false);
+  refetchReads();                     // never an intent — see below
+  // Nothing to re-subscribe: the host replayed your subscription keys before pushing this.
+});
+
+client.on(WALLET_EVENTS.DISCONNECTED, () => {
+  clearSessionAndState();             // the only real teardown of the four
 });
 
 client.on(WALLET_EVENTS.IDENTITY_CHANGED, (data) => {
-  // Update displayed address/nametag — also clears locked state
-  const identity = data as PublicIdentity;
+  setIdentity(data as PublicIdentity);
   setIsWalletLocked(false);
-  console.log('Address changed to:', identity.nametag);
 });
 ```
 
-### Error-based disconnect (fallback)
+**Never auto-replay an intent after an unlock.** It moves money, and it would execute with no
+fresh user gesture at the exact moment the wallet came back. Reads are safe; intents are not.
 
-If `wallet:locked` doesn't arrive (e.g., popup crashed), detect dead connections via request errors:
+### Classify failures by code, not by message text
 
 ```typescript
 try {
   await client.query('sphere_getBalance');
 } catch (err) {
-  if (/not.connected|timeout|transport|closed|session/i.test(err.message)) {
-    // Transport is dead — disconnect and show Connect button
-    disconnect();
-  }
+  const code = typeof err === 'object' && err !== null && 'code' in err ? (err as { code: unknown }).code : undefined;
+  if (code === ERROR_CODES.WALLET_LOCKED)        setIsWalletLocked(true);  // stay connected
+  else if (code === ERROR_CODES.NOT_CONNECTED ||
+           code === ERROR_CODES.SESSION_EXPIRED) clearSessionAndState();   // really gone
+  else                                           surface(err);             // everything else
 }
 ```
+
+A 4009 carries `data: { reason: 'locked' }` if you want the detail. The refusal **text** is a
+documented recommendation, not a contract — never match on it. A few SDK failures carry no code at
+all (`Not connected`, `Query timeout: …`, `Intent timeout: …`, `Connection timeout`,
+`Disconnected`), so keep a narrow message fallback for exactly those. The old advice,
+`/not.connected|timeout|transport|closed|session/i`, disconnected on any error whose text merely
+mentioned a session.
 
 ## Subscribable Events
 
@@ -234,7 +273,7 @@ unsub();
 
 ## Protocol Version & Compatibility
 
-The Connect protocol is currently at **`2.0`** (`SPHERE_CONNECT_VERSION = '2.0'`).
+The Connect protocol is currently at **`2.1`** (`SPHERE_CONNECT_VERSION = '2.1'`).
 
 **Same MAJOR = compatible.** A dApp on `2.0` and a wallet on `2.1` interoperate. **Different MAJOR = rejected.** A v1 dApp attempting to connect to a v2 wallet receives `UNSUPPORTED_PROTOCOL_VERSION` (4007) and must update its SDK.
 
@@ -354,6 +393,7 @@ try {
 | `4006` | `RATE_LIMITED` | Too many requests |
 | `4007` | `UNSUPPORTED_PROTOCOL_VERSION` | Connect MAJOR version mismatch — dApp must update its SDK |
 | `4008` | `INCOMPATIBLE_NETWORK` | dApp targets a different network than the wallet, or omitted `network` |
+| `4009` | `WALLET_LOCKED` | Wallet is locked — **the session is still alive**; `data.reason === 'locked'`; retry after `wallet:unlocked` |
 | `4100` | `INSUFFICIENT_BALANCE` | Not enough tokens |
 | `4101` | `INVALID_RECIPIENT` | Bad recipient address |
 | `4102` | `TRANSFER_FAILED` | Transfer execution failed |
@@ -376,7 +416,7 @@ try {
 ```typescript
 import { SPHERE_CONNECT_VERSION, HOST_READY_TYPE, HOST_READY_TIMEOUT } from '@unicitylabs/sphere-sdk/connect';
 
-SPHERE_CONNECT_VERSION // '2.0'
+SPHERE_CONNECT_VERSION // '2.1'
 HOST_READY_TYPE        // 'sphere-connect:host-ready'
 HOST_READY_TIMEOUT     // 30000 (ms)
 ```

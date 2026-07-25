@@ -21,7 +21,14 @@ export interface UseWalletConnect {
   isConnected: boolean;
   isConnecting: boolean;
   isAutoConnecting: boolean;
+  /** Wallet locked. Session, permissions and transport are ALIVE (Connect >= 2.1). */
   isWalletLocked: boolean;
+  /** A lock ended with a DIFFERENT wallet than this session was approved for. */
+  walletChanged: boolean;
+  /** Bumps once per unlock that returned the SAME wallet — the retry signal for reads. */
+  unlockEpoch: number;
+  /** Connect version the WALLET reported at handshake ('2.1', '2.0', …) or null. */
+  walletProtocol: string | null;
   identity: PublicIdentity | null;
   permissions: readonly PermissionScope[];
   error: string | null;
@@ -35,15 +42,38 @@ export interface UseWalletConnect {
   extensionInstalled: boolean;
   transportType: DetectedTransport | null;
 }
-
 const DISCONNECTED = {
   isConnected: false,
   isConnecting: false,
   isWalletLocked: false,
+  walletChanged: false,
+  unlockEpoch: 0,
+  walletProtocol: null as string | null,
   identity: null as PublicIdentity | null,
   permissions: [] as readonly PermissionScope[],
   error: null as string | null,
 };
+
+/** Connect errors carry a numeric `.code`; SphereError.code is a string, so it is ignored here. */
+function connectErrorCode(err: unknown): number | undefined {
+  if (typeof err !== 'object' || err === null || !('code' in err)) return undefined;
+  const code = (err as { code: unknown }).code;
+  return typeof code === 'number' ? code : undefined;
+}
+
+/** SDK failures that carry no code at all but do mean the connection is gone. Deliberately
+ *  matches neither "session" nor a bare "closed": a typed refusal that merely mentions a
+ *  session must not force a disconnect. Never match on a 4009's text — it is a documented
+ *  recommendation, not a wire contract. */
+const CODELESS_TEARDOWN =
+  /\b(not connected|disconnected|connection timeout|query timeout|intent timeout|popup was closed)\b/i;
+
+/** True when the wallet preserves the session across a lock (Connect >= 2.1). Unknown = legacy:
+ *  assuming otherwise leaves the dApp waiting forever for a wallet:unlocked that cannot arrive. */
+function supportsGracefulLock(walletProtocol: string | null): boolean {
+  const minor = Number(/^\d+\.(\d+)$/.exec(walletProtocol ?? '')?.[1] ?? NaN);
+  return Number.isFinite(minor) && minor >= 1;
+}
 
 const WALLET_URL = import.meta.env.VITE_WALLET_URL || 'https://sphere.unicity.network';
 
@@ -68,6 +98,21 @@ export function useWalletConnect(): UseWalletConnect {
   const [state, setState] = useState({ ...DISCONNECTED });
 
   const resultRef = useRef<AutoConnectResult | null>(null);
+  // Mirrors state.identity so the event handlers, registered once per connection, compare
+  // against the CURRENT identity instead of a stale closure copy.
+  const identityRef = useRef<PublicIdentity | null>(null);
+  useEffect(() => {
+    identityRef.current = state.identity;
+  }, [state.identity]);
+
+  // Reset local state WITHOUT calling AutoConnectResult.disconnect(): that closes the popup,
+  // and after a logout the user may be onboarding a new wallet in exactly that window.
+  const localReset = useCallback(() => {
+    resultRef.current = null;
+    sessionStorage.removeItem(SESSION_KEY);
+    setTransportType(null);
+    setState({ ...DISCONNECTED });
+  }, []);
 
   // Full cleanup — resets all state, usable from any disconnect path
   const fullDisconnect = useCallback(() => {
@@ -103,24 +148,32 @@ export function useWalletConnect(): UseWalletConnect {
       setState({
         ...DISCONNECTED,
         isConnected: true,
+        // A resume that lands on a LOCKED wallet succeeds and reports it: connected AND locked.
+        isWalletLocked: result.connection.locked === true,
         identity: result.connection.identity,
         permissions: result.connection.permissions,
+        walletProtocol: result.client.walletProtocol,
       });
     } catch (err) {
       sessionStorage.removeItem(SESSION_KEY);
       // Handle v2 compatibility gate rejections with user-facing messages
-      const code = (err as { code?: number })?.code;
+      const code = connectErrorCode(err);
       let message: string;
       if (code === ERROR_CODES.INCOMPATIBLE_NETWORK) {
         message = 'Wrong network — please switch your wallet to testnet2.';
       } else if (code === ERROR_CODES.UNSUPPORTED_PROTOCOL_VERSION) {
         message = 'This app needs to be updated to connect to your wallet.';
+      } else if (code === ERROR_CODES.WALLET_LOCKED) {
+        // A resume with a MATCHING sessionId succeeds while locked, so this is the other case:
+        // a locked wallet with nothing to resume. Nothing is broken — say so and wait.
+        message = 'Your wallet is locked. Unlock it and try again.';
       } else {
         message = err instanceof Error ? err.message : 'Connection failed';
       }
       setState(s => ({
         ...s,
         isConnecting: false,
+        isWalletLocked: code === ERROR_CODES.WALLET_LOCKED,
         error: silent ? null : message,
       }));
     }
@@ -136,14 +189,37 @@ export function useWalletConnect(): UseWalletConnect {
     fullDisconnect();
   }, [fullDisconnect]);
 
-  // Auto-disconnect on transport/session errors (popup closed, refreshed, logged out)
+  // Classify a failed request by ERROR CODE, never by the message text.
+  //   4009             → the session is ALIVE. Flag the lock, change nothing else, rethrow.
+  //   4001 / 4004      → the connection is gone. Reset locally.
+  //   codeless timeout → the connection is gone.
+  //   anything else    → a typed refusal the session survives. Surface it untouched.
   const handleRequestError = useCallback((err: unknown) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/not.connected|timeout|transport|closed|session/i.test(msg)) {
-      fullDisconnect();
+    const code = connectErrorCode(err);
+
+    if (code === ERROR_CODES.WALLET_LOCKED) {
+      // Do NOT disconnect: the host preserved this session and will push wallet:unlocked on it.
+      // The caller's promise still rejects — retrying is your decision, never a silent replay.
+      setState(s => ({ ...s, isWalletLocked: true }));
+      throw err;
     }
+
+    const gone =
+      code === ERROR_CODES.NOT_CONNECTED ||
+      code === ERROR_CODES.SESSION_EXPIRED ||
+      (code === undefined && CODELESS_TEARDOWN.test(err instanceof Error ? err.message : String(err)));
+
+    if (gone) {
+      resultRef.current = null;
+      sessionStorage.removeItem(SESSION_KEY);
+      setTransportType(null);
+      // Preserve isWalletLocked: a codeless timeout raised WHILE the wallet is locked must not
+      // erase the lock by assigning the whole DISCONNECTED constant over it.
+      setState(s => ({ ...DISCONNECTED, isWalletLocked: s.isWalletLocked }));
+    }
+
     throw err;
-  }, [fullDisconnect]);
+  }, []);
 
   const query = useCallback(async <T = unknown>(method: RpcMethod | string, params?: Record<string, unknown>): Promise<T> => {
     if (!resultRef.current) throw new Error('Not connected');
@@ -168,34 +244,58 @@ export function useWalletConnect(): UseWalletConnect {
     return resultRef.current.client.on(event, handler);
   }, []);
 
-  // Handle wallet-initiated events (auto-pushed by ConnectHost, no sphere_subscribe needed)
+  // Auto-pushed by ConnectHost — no sphere_subscribe needed for any of these.
   useEffect(() => {
     if (!state.isConnected || !resultRef.current) return;
     const client = resultRef.current.client;
 
-    // wallet:locked — handling depends on transport type
+    // wallet:locked — a STATE, not a teardown. Session, permissions and transport all survive,
+    // in EVERY transport mode. Disconnecting here orphans a host-side session that outlives the
+    // lock, and the next silent auto-connect reconnects with no prompt.
+    //
+    // The one exception is a wallet still speaking Connect 2.0, where the same event name also
+    // meant "session revoked" and wallet:unlocked will never arrive.
     const unsubLocked = client.on(WALLET_EVENTS.LOCKED, () => {
-      if (transportType === 'popup') {
-        // Popup: full disconnect (clear client, transport, session) but do NOT
-        // close the popup — the wallet may just be locked, not gone.
-        fullDisconnect();
-      } else {
-        // Extension / iframe: wallet is locked but the host is still alive.
-        // Set locked flag and wait for unlock (identity:changed fires on unlock).
-        setState(s => ({ ...s, isWalletLocked: true }));
+      if (!supportsGracefulLock(client.walletProtocol)) {
+        localReset();
+        return;
       }
+      setState(s => ({ ...s, isWalletLocked: true }));
     });
 
-    // identity:changed — user switched address in wallet
+    // wallet:unlocked — the SAME session continues. Check the identity BEFORE resuming. There is
+    // nothing to re-subscribe: the host replays your subscription keys before pushing this.
+    const unsubUnlocked = client.on(WALLET_EVENTS.UNLOCKED, (data) => {
+      const next = (data as { identity?: PublicIdentity } | undefined)?.identity ?? null;
+      const previous = identityRef.current;
+      const sameWallet = !!next && !!previous && next.chainPubkey === previous.chainPubkey;
+
+      if (!sameWallet) {
+        // "Forgot password -> restore from recovery phrase" installs a different seed, and the
+        // origin approval that authorises this session carries no identity binding.
+        setState(s => ({ ...s, isWalletLocked: false, walletChanged: true, identity: next ?? s.identity }));
+        return;
+      }
+      setState(s => ({ ...s, isWalletLocked: false, walletChanged: false, unlockEpoch: s.unlockEpoch + 1 }));
+    });
+
+    // wallet:disconnected — the session is GONE. The only teardown of the four.
+    const unsubDisconnected = client.on(WALLET_EVENTS.DISCONNECTED, () => {
+      localReset();
+    });
+
+    // identity:changed — the user switched address inside an UNLOCKED wallet.
     const unsubIdentity = client.on(WALLET_EVENTS.IDENTITY_CHANGED, (data) => {
-      setState(s => ({ ...s, isWalletLocked: false, identity: data as PublicIdentity }));
+      setState(s => ({ ...s, isWalletLocked: false, walletChanged: false, identity: data as PublicIdentity }));
     });
 
     return () => {
       unsubLocked();
+      unsubUnlocked();
+      unsubDisconnected();
       unsubIdentity();
     };
-  }, [state.isConnected, fullDisconnect, transportType]);
+  }, [state.isConnected, localReset]);
 
   // Silent auto-connect on mount
   useEffect(() => {
@@ -231,12 +331,75 @@ export function useWalletConnect(): UseWalletConnect {
 
 ## Wallet events (handled automatically)
 
-The hook automatically handles two wallet-initiated events pushed by `ConnectHost`:
+The hook handles all four events `ConnectHost` pushes without a subscription. **The handling no
+longer depends on the transport** — a lock preserves the session in popup, extension and iframe
+mode alike.
 
-| Event | Popup mode | Extension / Iframe mode |
-|-------|------------|------------------------|
-| `wallet:locked` | Full disconnect — clears client, transport, and sessionStorage. Shows Connect button. The popup itself is **not** closed. | Sets `isWalletLocked = true`. The host is still alive, so the hook waits for unlock (`identity:changed` clears the flag). |
-| `identity:changed` | Updates `identity` in state, UI re-renders | Updates `identity`, clears `isWalletLocked`, UI re-renders |
+| Event | What the hook does |
+|-------|--------------------|
+| `wallet:locked` | Sets `isWalletLocked`. Keeps the client, the transport and the saved `sessionId`. Never closes the popup. Against a Connect 2.0 wallet (`walletProtocol`) it resets locally instead — there the session was already revoked. |
+| `wallet:unlocked` | Compares `identity.chainPubkey` with the one this session connected as. Same wallet → clears the lock and bumps `unlockEpoch`. Different wallet (or no identity in the payload) → clears the lock, raises `walletChanged`, resumes nothing. Sends nothing either way: the host re-armed your subscriptions before pushing the event. |
+| `wallet:disconnected` | Local reset via `localReset()` — clears `resultRef`, `sessionStorage` and state. Deliberately **not** `AutoConnectResult.disconnect()`, which closes the popup the user may be onboarding a new wallet in. |
+| `identity:changed` | Updates `identity`; clears `isWalletLocked` and `walletChanged`. |
+
+These events require **no `sphere_subscribe`** call — they are auto-pushed by the wallet, and
+routing one through `sphere_subscribe` is refused (it would silently never emit).
+
+### Resuming onto a locked wallet
+
+`doConnect()` reads `result.connection.locked`: a resume whose `sessionId` matches **succeeds**
+while the wallet is locked, so the hook comes up connected **and** locked rather than failing.
+
+### Retrying after unlock
+
+`unlockEpoch` is the retry signal. Key a `useEffect` on it in your **read** panels:
+
+```tsx
+useEffect(() => {
+  if (unlockEpoch === 0) return;   // no unlock yet
+  void refetch();
+}, [unlockEpoch]); // eslint-disable-line react-hooks/exhaustive-deps
+```
+
+**Never auto-replay an intent.** It moves money, and firing it on unlock means it executes with
+no fresh user gesture, at the exact moment the wallet came back. The SDK does not queue or replay
+a 4009'd request either — the original promise rejects and retrying is your decision.
+
+### Error-based classification
+
+A failed `query()` / `intent()` is classified by the numeric `.code`, not by the message text:
+`4009` flags the lock and keeps everything (its `data` is `{ reason: 'locked' }`); `4001` / `4004`
+and the codeless SDK timeouts reset locally; every other code is surfaced untouched. The old regex
+(`/not.connected|timeout|transport|closed|session/i`) disconnected on any error whose text merely
+mentioned a session.
+
+### Who raises the unlock UI
+
+The wallet does, from its own permanent chrome, only after a human clicks. **No dApp request can
+raise the password field** — not a query, not an intent, not a handshake. A locked request lights a
+passive badge in the wallet and nothing more. A forged consent dialog gains an attacker nothing; a
+forged credential dialog harvests the seed password, so the two must never share a trigger.
+
+## Connection modes
+
+| Priority | Mode | Persistent? | Notes |
+|----------|------|-------------|-------|
+| P1 | Embedded iframe | Yes (parent keeps running) | dApp runs inside Sphere's own iframe |
+| P2 | Browser extension | Yes (service worker) | Best UX — auto-reconnects on page reload |
+| P3 | Popup window | **No** — popup must stay open | Fallback when no extension. Session persisted via `sessionStorage` for page-reload resume. |
+
+## Wallet events (handled automatically)
+
+The hook automatically handles the four wallet-initiated events pushed by `ConnectHost`. The
+reaction no longer depends on the transport — a lock preserves the session in popup, extension
+and iframe alike:
+
+| Event | What the hook does |
+|-------|--------------------|
+| `wallet:locked` | Sets `isWalletLocked = true` and **nothing else**. Client, transport and saved session all survive; requests answer `WALLET_LOCKED` (4009) until the wallet is unlocked. Against a legacy Connect 2.0 wallet (`walletProtocol === '2.0'`) it still tears down — there the same event had already revoked the session. |
+| `wallet:unlocked` | Compares the identity in the payload against the connected one. Same wallet → clears the flag and bumps `unlockEpoch` so read panels can refetch. Different wallet → sets `walletChanged` and resumes nothing. Subscriptions need no re-arming: the host replays them before pushing this. |
+| `wallet:disconnected` | The only teardown signal. Clears client, transport and saved session, and shows the Connect button. |
+| `identity:changed` | Updates `identity` in state, UI re-renders. |
 
 These events require **no `sphere_subscribe`** call — they are auto-pushed by the wallet.
 
@@ -289,4 +452,11 @@ function App() {
 - Popup mode requires the popup to stay open — closing it disconnects. The `sessionId` is saved to `sessionStorage` so the session can resume after page reload (as long as the popup is still open).
 - `autoConnect()` handles all transport detection internally — no separate detection file needed
 - `identity` updates in real-time when the user switches addresses in the wallet
-- Connection auto-resets on wallet logout, popup close, or transport errors
+- A wallet **lock** never disconnects: `isWalletLocked` goes true, the session and the popup
+  survive, and requests answer `WALLET_LOCKED` (4009) until the user unlocks. Only
+  `wallet:disconnected` (logout, wallet deleted, session expiry, a different seed behind the lock
+  screen) resets the connection — plus a `wallet:locked` from a legacy Connect 2.0 wallet, which
+  had already revoked the session.
+- Requires `@unicitylabs/sphere-sdk` ≥ 0.13.0 for `WALLET_EVENTS.UNLOCKED` / `.DISCONNECTED`,
+  `ERROR_CODES.WALLET_LOCKED`, `ConnectResult.locked` and `ConnectClient.walletProtocol` /
+  `.walletLocked`.

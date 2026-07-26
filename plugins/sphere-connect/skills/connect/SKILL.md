@@ -144,7 +144,16 @@ The wallet pushes four events automatically after connection — **no `sphere_su
 
 While locked, `sphere_getIdentity`, `sphere_subscribe`, `sphere_unsubscribe` and
 `sphere_disconnect` are still answered normally; everything else — including every intent — gets
-4009 in the same tick. Balances, tokens and history are never served and never cached.
+4009 in the same tick. Balances, tokens and
+history are never served and never cached — and neither is anything else: the twelve refused
+methods include `sphere_resolve` and **all four DM reads**, so messaging does NOT keep working
+while locked. Stop issuing reads and wait for the unlock; do not poll into refusals.
+
+A wallet that **cold-starts locked** (a wallet-page reload or a fresh popup — the password is
+memory-only) holds no session, so the HANDSHAKE itself is refused with an errorless empty
+response: `connect()` rejects with no `.code` at all. Do not write
+`if (err.code === ERROR_CODES.WALLET_LOCKED)` expecting to catch that case — treat an unexpected
+rejection as "not ready yet" and retry on the next `HOST_READY`.
 
 A resume handshake whose `sessionId` matches **succeeds** while the wallet is locked and the
 result carries `locked: true`, so check `result.locked` after `connect()`.

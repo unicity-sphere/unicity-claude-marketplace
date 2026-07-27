@@ -193,13 +193,27 @@ export function useWalletConnect(): UseWalletConnect {
   //   4009             → the session is ALIVE. Flag the lock, change nothing else, rethrow.
   //   4001 / 4004      → the connection is gone. Reset locally.
   //   codeless timeout → the connection is gone.
+  //   4201             → the intent's outcome is UNKNOWN. Never retry; reconcile first.
   //   anything else    → a typed refusal the session survives. Surface it untouched.
   const handleRequestError = useCallback((err: unknown) => {
     const code = connectErrorCode(err);
 
+    if (code === ERROR_CODES.INTENT_OUTCOME_UNKNOWN) {
+      // 4201. The wallet TOOK this intent and the answer was lost — a host deadline, a lock, a
+      // logout. THE MONEY MAY OR MAY NOT HAVE MOVED.
+      //
+      // Do not retry, and do not let your UI invite one: re-enabling a Send button here is how
+      // a user pays twice. Reconcile out of band first — poll the recipient, your backend, the
+      // aggregator — and only then decide whether anything still needs sending. The connection
+      // itself is fine, so nothing is torn down.
+      throw err;
+    }
+
     if (code === ERROR_CODES.WALLET_LOCKED) {
       // Do NOT disconnect: the host preserved this session and will push wallet:unlocked on it.
       // The caller's promise still rejects — retrying is your decision, never a silent replay.
+      // Safe to retry after the unlock: 4009 is only ever sent for a QUERY, never for an intent
+      // the wallet already accepted.
       setState(s => ({ ...s, isWalletLocked: true }));
       throw err;
     }
@@ -457,6 +471,7 @@ function App() {
   `wallet:disconnected` (logout, wallet deleted, session expiry, a different seed behind the lock
   screen) resets the connection — plus a `wallet:locked` from a legacy Connect 2.0 wallet, which
   had already revoked the session.
-- Requires `@unicitylabs/sphere-sdk` ≥ 0.13.0 for `WALLET_EVENTS.UNLOCKED` / `.DISCONNECTED`,
+- Requires `@unicitylabs/sphere-sdk` ≥ 0.13.0 (published) for `WALLET_EVENTS.UNLOCKED` / `.DISCONNECTED`,
+  `ERROR_CODES.INTENT_OUTCOME_UNKNOWN`,
   `ERROR_CODES.WALLET_LOCKED`, `ConnectResult.locked` and `ConnectClient.walletProtocol` /
   `.walletLocked`.

@@ -405,7 +405,8 @@ try {
 | `4100` | `INSUFFICIENT_BALANCE` | Not enough tokens |
 | `4101` | `INVALID_RECIPIENT` | Bad recipient address |
 | `4102` | `TRANSFER_FAILED` | Transfer execution failed |
-| `4200` | `INTENT_CANCELLED` | Intent cancelled |
+| `4200` | `INTENT_CANCELLED` | Intent cancelled — the user declined and **nothing happened**. Safe to re-offer. |
+| `4201` | `INTENT_OUTCOME_UNKNOWN` | The wallet took the intent and the answer was lost (host deadline, lock, logout). **The outcome is unknown — the money may or may not have moved. Never retry**; reconcile out of band first. |
 
 ### Error handling
 ```typescript

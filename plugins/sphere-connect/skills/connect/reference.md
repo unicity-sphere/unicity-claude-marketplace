@@ -46,7 +46,38 @@ const peer = await client.query('sphere_resolve', { identifier: '@alice' });
 // Send L3 tokens. amount is in BASE UNITS (smallest unit), a string — convert a
 // human amount with parseTokenAmount(human, decimals) (or ethers/viem parseUnits).
 await client.intent('send', { to: '@alice', amount: '1000000000000000000', coinId: '<lowercase 64-hex coin id>' }); // = 1 of an 18-decimals coin
+```
 
+**What `send` resolves to** — this matters more than the request shape:
+
+```typescript
+{
+  success: true,
+  transferId?: string,  // OMITTED when the send is delivery-pending
+  status: 'pending' | 'submitted' | 'confirmed' | 'delivered' | 'completed' | 'failed',
+  deliveryPending: boolean,
+}
+```
+
+`deliveryPending: true` means the spend is committed on-chain — or, on possibly-certified resolutions, may already
+be — but delivery to the recipient has not landed; the wallet journaled it and will retry under the original transfer. It arrives as
+`{ success: true, status: 'pending', deliveryPending: true }` — a success **with no `transferId`**, because
+pending results carry an empty id by design.
+
+**Never re-send on `deliveryPending`.** A second `send` consumes a different source token and pays twice.
+Treat it as a pending success and tell the user the money may already have moved (at minimum it is in flight and must not be re-sent).
+
+```typescript
+const result = await client.intent('send', { to, amount, coinId });
+if (result.deliveryPending) {
+  // Money is sent (or may already be). Delivery is queued. Do NOT retry.
+  showPendingDelivery(result.status);
+} else if (result.transferId) {
+  showDelivered(result.transferId);
+}
+```
+
+```typescript
 // Send direct message
 await client.intent('dm', { to: '@bob', message: 'Hello!' });
 
@@ -419,6 +450,14 @@ try {
   else throw err;
 }
 ```
+
+### Mint: the subscription warm-up gate
+
+When the wallet runs with subscriptions enabled it provisions a per-wallet key before it can certify a mint.
+Until that key lands, a `mint` intent is rejected with an internal error whose message is
+`Subscription is still being set up — try again in a moment`. This is **transient**, not a failure:
+tell the user to retry in a moment rather than surfacing it as a hard error. It never fires on wallets
+running without subscriptions.
 
 ## Protocol Constants
 

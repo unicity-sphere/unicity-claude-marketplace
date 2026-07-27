@@ -36,9 +36,19 @@ Generate one file + env:
 
 No separate detection file needed — `autoConnect()` handles transport detection internally.
 
-### Node.js projects
-Generate one file:
-1. **Client wrapper** — `src/lib/sphere-client.ts` (see [nodejs-template.md](nodejs-template.md))
+### Node.js projects — dApp connecting to a wallet, vs. own-wallet bot
+
+These are two different shapes — check which one the user actually wants before generating:
+
+- **"Connect to a wallet" / "talk to Sphere over Connect" / "Node dApp"** → this is a client that
+  connects *to* someone else's already-running wallet. Generate one file:
+  1. **Client wrapper** — `src/lib/sphere-client.ts` (see [nodejs-template.md](nodejs-template.md))
+- **"Build a bot" / "give it its own wallet" / "own-wallet agent" / "run a wallet headlessly"** →
+  this bot **is** the wallet — its own keys, its own storage, direct SDK usage, no Connect protocol
+  at all. Generate the bot's own-wallet init + runtime + coin helpers (see
+  [bot-template.md](bot-template.md)). Always flag the wallet-api receive-rail nuance from that
+  template to the user before finishing (bare providers can send + DM but cannot receive tokens
+  sent from a hosted Sphere wallet).
 
 ### Vanilla JS projects
 Generate two files:
@@ -276,7 +286,17 @@ import { WebSocketTransport } from '@unicitylabs/sphere-sdk/connect/nodejs';
 
 ## Backend authentication
 
-To authenticate users to a backend server using wallet signatures (challenge-response → JWT), see [backend-auth.md](backend-auth.md).
+If the developer asks to **"authenticate" / "verify a signature" / "sign in with wallet" / "backend"
+login** (as opposed to connecting a frontend to a wallet), route there directly — do not generate a
+Connect-only integration for this ask. See [backend-auth.md](backend-auth.md) for the full
+challenge-response → JWT flow (byte-exact challenge reconstruction, signature recovery, no `Sphere`
+instance required to verify).
+
+## Own-wallet bots
+
+If the developer asks to **"build a bot" / "give an agent its own wallet" / "own wallet"**, that is
+not a Connect integration either — see the Node.js section above and
+[bot-template.md](bot-template.md).
 
 ## Full API reference
 

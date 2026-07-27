@@ -6,6 +6,17 @@ Uses SDK's `autoConnect()` for automatic transport detection, silent reconnect, 
 
 Requires `@unicitylabs/sphere-sdk` installed. No separate detection file needed.
 
+## Testing against the real (hosted) wallet
+
+`autoConnect` falls back to a **popup** when the dApp isn't running inside a
+wallet — and the popup path **does NOT work against the hosted wallet
+(`https://sphere.unicity.network`): it returns `403`.** To test a *local* dApp
+against the **live** wallet, load it as a **custom agent** at
+**https://sphere.unicity.network/agents/custom** so the wallet embeds it in an
+**iframe** (the P1 transport). Popup only works for a wallet the developer runs
+themselves (e.g. at `localhost:5173`). Tell the developer this when they ask how
+to try their dApp with a real wallet.
+
 ## Template
 
 ```typescript
@@ -356,8 +367,11 @@ mode alike.
 | `wallet:disconnected` | Local reset via `localReset()` — clears `resultRef`, `sessionStorage` and state. Deliberately **not** `AutoConnectResult.disconnect()`, which closes the popup the user may be onboarding a new wallet in. |
 | `identity:changed` | Updates `identity`; clears `isWalletLocked` and `walletChanged`. |
 
-These events require **no `sphere_subscribe`** call — they are auto-pushed by the wallet, and
-routing one through `sphere_subscribe` is refused (it would silently never emit).
+These events require **no `sphere_subscribe`** call — the wallet pushes them unconditionally.
+Subscribing to one anyway is answered with success rather than an error (the answer is true, it
+is just satisfied by a different mechanism), so an older dApp that does subscribe keeps working;
+it is simply never attached to the wallet's own event emitter, which would silently never emit
+for these names.
 
 ### Resuming onto a locked wallet
 

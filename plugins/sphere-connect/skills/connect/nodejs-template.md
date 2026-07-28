@@ -79,11 +79,20 @@ export async function connectToSphere(config: SphereClientConfig): Promise<Spher
   } catch (err) {
     transport.destroy();
     const code = (err as { code?: number })?.code;
+    // The gate publishes what it compared in `err.data`, and names both sides in
+    // `err.message`. Quote them — "update to the latest version" without a number is a
+    // refusal you cannot act on, and replacing the message discards both.
+    const data = (err as { data?: Record<string, unknown> })?.data;
     if (code === ERROR_CODES.INCOMPATIBLE_NETWORK) {
-      throw new Error('Wallet is on a different network — ensure the wallet uses testnet2.');
+      const walletId = (data?.walletNetwork as { id?: number })?.id;
+      throw new Error(`Wallet is on a different network (${walletId ?? 'unknown'}) — this bot targets testnet2.`);
     }
     if (code === ERROR_CODES.UNSUPPORTED_PROTOCOL_VERSION) {
-      throw new Error('Protocol version mismatch — update @unicitylabs/sphere-sdk to the latest version.');
+      throw new Error(
+        data?.requiredSdk
+          ? `Update @unicitylabs/sphere-sdk: this bot is on ${data.actualSdk ?? 'an unreported version'}, the wallet requires ${data.requiredSdk} or newer.`
+          : `Protocol version mismatch — ${(err as Error).message}`,
+      );
     }
     throw err;
   }

@@ -167,13 +167,23 @@ export function useWalletConnect(): UseWalletConnect {
       });
     } catch (err) {
       sessionStorage.removeItem(SESSION_KEY);
-      // Handle v2 compatibility gate rejections with user-facing messages
+      // Handle v2 compatibility gate rejections with user-facing messages.
+      // The gate publishes the versions it compared in `err.data` — quote them. A refusal
+      // that does not say WHICH version to move to is one you cannot act on, and hardcoding
+      // "please update" here throws away both `err.data` and the wallet's own message.
       const code = connectErrorCode(err);
+      const data = (err as { data?: Record<string, unknown> })?.data;
       let message: string;
       if (code === ERROR_CODES.INCOMPATIBLE_NETWORK) {
-        message = 'Wrong network — please switch your wallet to testnet2.';
+        const wanted = (data?.clientNetwork as { name?: string; id?: number })?.name ?? 'testnet2';
+        const walletId = (data?.walletNetwork as { id?: number })?.id;
+        message = `Wrong network — this app targets ${wanted}, your wallet is on network ${walletId ?? 'another'}.`;
       } else if (code === ERROR_CODES.UNSUPPORTED_PROTOCOL_VERSION) {
-        message = 'This app needs to be updated to connect to your wallet.';
+        // data.requiredSdk / data.actualSdk on an npm floor; data.requiredProtocol on a
+        // protocol floor. `err.message` already names both sides on a current wallet.
+        message = data?.requiredSdk
+          ? `This app is built on sphere-sdk ${data.actualSdk ?? 'an unreported version'} — the wallet requires ${data.requiredSdk} or newer.`
+          : err instanceof Error ? err.message : 'This app needs to be updated to connect to your wallet.';
       } else if (code === ERROR_CODES.WALLET_LOCKED) {
         // A resume with a MATCHING sessionId succeeds while locked, so this is the other case:
         // a locked wallet with nothing to resume. Nothing is broken — say so and wait.

@@ -407,13 +407,21 @@ try {
     // data: { reason: 'network_incompatible', walletNetwork: { id: number }, clientNetwork: NetworkInfo | null }
     showWrongNetwork((e as ConnectError).data);
   } else if (code === ERROR_CODES.UNSUPPORTED_PROTOCOL_VERSION) {
-    // data: { reason: 'protocol_incompatible', walletProtocol: '2.0', clientProtocol: '1.0' }
+    // data: { reason: 'protocol_incompatible', walletProtocol: '2.1', clientProtocol: '1.0' }
+    // A version floor also sends what it demanded:
+    //   npm floor      → requiredSdk: string, actualSdk: string | null (null = dApp sent none)
+    //   protocol floor → requiredProtocol: string
     showUpdateRequired((e as ConnectError).data);
   } else {
     showGenericError();
   }
 }
 ```
+
+**Quote the versions.** `e.message` already names both sides — `SDK version 0.11.9 is below the
+required minimum 0.12.0` — and `e.data` carries them structured. Replacing either with a fixed
+string like "please update this app" strips the only fact that makes the refusal actionable:
+*which* version to move to. Show `e.message` verbatim if you have no custom copy.
 
 ## Error Codes
 

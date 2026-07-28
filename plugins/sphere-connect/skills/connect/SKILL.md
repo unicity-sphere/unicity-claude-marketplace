@@ -121,10 +121,14 @@ document.getElementById('connect').onclick = async () => {
     console.log('Connected:', wallet.connection.identity);
   } catch (err) {
     const code = err?.code;
+    // A gate refusal carries the versions it compared in err.data, and names both sides
+    // in err.message. Say them — do not replace them with "please update".
     if (code === ERROR_CODES.INCOMPATIBLE_NETWORK) {
-      alert('Wrong network — switch your wallet to testnet2.');
+      alert(`Wrong network — your wallet is on network ${err.data?.walletNetwork?.id}, this app targets testnet2.`);
     } else if (code === ERROR_CODES.UNSUPPORTED_PROTOCOL_VERSION) {
-      alert('Please update this app to connect to your wallet.');
+      alert(err.data?.requiredSdk
+        ? `Update this app: it uses sphere-sdk ${err.data.actualSdk ?? '(not reported)'}, the wallet requires ${err.data.requiredSdk} or newer.`
+        : err.message);
     } else {
       alert('Connection failed: ' + err.message);
     }

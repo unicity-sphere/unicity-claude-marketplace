@@ -6,7 +6,15 @@ This template creates a Sphere Connect client for Node.js applications using Web
 
 ```bash
 npm install @unicitylabs/sphere-sdk ws
+npm install -D @types/ws   # TypeScript projects only
 ```
+
+`ws` ships no type declarations of its own. Without `@types/ws`, `import WebSocket from 'ws'` fails
+under `strict` with **TS7016** — *"Could not find a declaration file for module 'ws'"* — so a
+TypeScript project that installs only `ws` cannot compile this template.
+
+Install `@unicitylabs/sphere-sdk@^0.17.0`. The wallet refuses a handshake from a dApp reporting an
+SDK below **0.14.1** with `UNSUPPORTED_PROTOCOL_VERSION` (4007).
 
 ## Template
 
@@ -17,6 +25,15 @@ import { ConnectClient, SPHERE_NETWORKS, ERROR_CODES, RPC_METHODS, INTENT_ACTION
 import { WebSocketTransport } from '@unicitylabs/sphere-sdk/connect/nodejs';
 import type { RpcMethod, IntentAction, PublicIdentity, PermissionScope } from '@unicitylabs/sphere-sdk/connect';
 import WebSocket from 'ws';
+
+/**
+ * The target network is configuration, not a constant: SPHERE_NETWORKS has TWO live entries
+ * (mainnet = { id: 1 }, testnet2 = { id: 4 }), and the wallet refuses a handshake for the other
+ * one with INCOMPATIBLE_NETWORK (4008).
+ */
+const NETWORK_NAME = (process.env.SPHERE_NETWORK ?? 'testnet2') as keyof typeof SPHERE_NETWORKS;
+const NETWORK = SPHERE_NETWORKS[NETWORK_NAME];
+if (!NETWORK) throw new Error(`Unknown Sphere network: ${NETWORK_NAME}`);
 
 export interface SphereClientConfig {
   /** WebSocket URL of the wallet host (e.g., 'ws://localhost:8765') */
@@ -70,7 +87,7 @@ export async function connectToSphere(config: SphereClientConfig): Promise<Spher
   const client = new ConnectClient({
     transport,
     dapp: config.dapp,
-    network: SPHERE_NETWORKS.testnet2,
+    network: NETWORK,
   });
 
   let result;
@@ -85,7 +102,7 @@ export async function connectToSphere(config: SphereClientConfig): Promise<Spher
     const data = (err as { data?: Record<string, unknown> })?.data;
     if (code === ERROR_CODES.INCOMPATIBLE_NETWORK) {
       const walletId = (data?.walletNetwork as { id?: number })?.id;
-      throw new Error(`Wallet is on a different network (${walletId ?? 'unknown'}) — this bot targets testnet2.`);
+      throw new Error(`Wallet is on a different network (${walletId ?? 'unknown'}) — this bot targets ${NETWORK.name} (id ${NETWORK.id}).`);
     }
     if (code === ERROR_CODES.UNSUPPORTED_PROTOCOL_VERSION) {
       throw new Error(

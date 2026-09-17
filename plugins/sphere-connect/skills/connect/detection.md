@@ -2,6 +2,16 @@
 
 Detection utilities for selecting the correct transport. These are **also exported from the SDK** — you only need a separate file if you want to customize the logic.
 
+> **Reference only — do not scaffold this file by default.** `autoConnect()` already detects the
+> transport, so a generated dApp needs no detection file at all. Write one only when the project
+> deliberately wants its own logic.
+
+> **The extension branch is dead weight.** The Sphere Chrome extension is discontinued: no supported
+> wallet injects `window.sphere.isInstalled()`, so `hasExtension()` is false in practice. It is kept
+> here because the SDK still exports it and `autoConnect()` still probes for it — not because it is a
+> path to build on. The production transport is the **iframe**: the Sphere wallet embeds the dApp and
+> speaks `PostMessageTransport` to it.
+
 ## SDK exports (recommended)
 
 ```typescript
@@ -68,8 +78,17 @@ export function hasExtension() {
 
 ## How detection works
 
-- **`isInIframe()`**: Page is embedded inside another page (Sphere's iframe) → use `PostMessageTransport.forClient()`.
+- **`isInIframe()`**: the page is embedded inside another page (the Sphere wallet's iframe) → use
+  `PostMessageTransport.forClient()`. **This is the production path**, and the only one a deployed
+  dApp should be designed around.
 
-- **`hasExtension()`**: Sphere browser extension injected `window.sphere.isInstalled()` → use `ExtensionTransport.forClient()`. This is the best mode — persistent connection via background service worker, auto-reconnects on page reload.
+- **`hasExtension()`**: the legacy Sphere browser extension injected `window.sphere.isInstalled()` →
+  `ExtensionTransport.forClient()`. **Discontinued** — no supported wallet is behind this transport
+  any more, so this branch does not fire. Never treat a truthy result as the preferred mode, and
+  never tell a user to install the extension.
 
-- **Fallback (popup)**: No extension, not in iframe → open Sphere as a popup window. The popup must stay open for the connection to work.
+- **Fallback (popup)**: not in an iframe → open a wallet as a popup window. The popup must stay open
+  for the connection to work, and the **hosted** wallet (`https://sphere.unicity.network`) answers
+  the popup path with **403** — so this works only against a wallet the developer runs themselves.
+  To test a local dApp against the live wallet, load it as a custom agent instead
+  (`https://sphere.unicity.network/agents/custom?url=…`, **https URLs only** — see SKILL.md).

@@ -15,6 +15,16 @@ You are helping a developer integrate the Sphere wallet Connect protocol into th
 ## Step 1: Detect project context
 
 - **Framework**: Check `package.json` for React (`react`), Vue (`vue`), Svelte (`svelte`), or Node.js (no browser framework)
+- **Bundler / meta-framework**: this decides the env-var syntax and where browser-only code may run.
+  Check for `next` in dependencies or a `next.config.*` (Next.js), otherwise `vite.config.*` (Vite),
+  otherwise `webpack.config.*` / CRA (`react-scripts`).
+  - **Vite** — `import.meta.env.VITE_*`, and top-level browser code is fine.
+  - **Next.js** — `process.env.NEXT_PUBLIC_*`, the hook file needs `'use client'`, and
+    `isInIframe()` (and anything else reading `window` / `location`) must only be called inside
+    `useEffect` — `window` does not exist during the server render, and a value that differs
+    between the server and the first client render is a hydration mismatch. See the Next.js
+    section of [react-template.md](react-template.md).
+  - **Anything else** — use that bundler's own public-env prefix and keep the rest of the template unchanged.
 - **Language**: Check for `tsconfig.json` (TypeScript) or plain JavaScript
 - **Package manager**: Check for `bun.lockb` (bun), `pnpm-lock.yaml` (pnpm), `yarn.lock` (yarn), or `package-lock.json` (npm)
 - **Existing SDK**: Check if `@unicitylabs/sphere-sdk` is in dependencies
@@ -23,7 +33,13 @@ You are helping a developer integrate the Sphere wallet Connect protocol into th
 
 If `@unicitylabs/sphere-sdk` is not installed, install it:
 - Browser: `npm install @unicitylabs/sphere-sdk`
-- Node.js: `npm install @unicitylabs/sphere-sdk ws`
+- Node.js: `npm install @unicitylabs/sphere-sdk ws` — plus `npm install -D @types/ws` on a
+  TypeScript project. `ws` ships no declarations of its own, so without it `import WebSocket from 'ws'`
+  fails with TS7016 under `strict`.
+
+Install `0.17.x`. The wallet refuses a handshake from a dApp reporting an npm SDK below
+**`0.14.1`** (`DEFAULT_MIN_CLIENT_SDK_VERSION = '0.14.1-0'`) with `UNSUPPORTED_PROTOCOL_VERSION`
+(4007) before any UI appears.
 
 ## Step 3: Generate integration code
 
@@ -32,7 +48,18 @@ Based on the detected framework:
 ### React projects (recommended: autoConnect)
 Generate one file + env:
 1. **Main hook** — `src/hooks/useWalletConnect.ts` (see [react-template.md](react-template.md))
-2. **Environment** — Add `VITE_WALLET_URL=https://sphere.unicity.network` to `.env`
+2. **Environment** — add the wallet URL and the target network to `.env`, using the prefix the
+   bundler detected in step 1:
+   - Vite: `VITE_WALLET_URL=https://sphere.unicity.network` and `VITE_SPHERE_NETWORK=testnet2`
+   - Next.js: `NEXT_PUBLIC_WALLET_URL=…` and `NEXT_PUBLIC_SPHERE_NETWORK=testnet2`
+
+   The network is a **config value, not a constant**: both `mainnet` and `testnet2` are live, and a
+   dApp that hardcodes the wrong one is refused with `INCOMPATIBLE_NETWORK` (4008) at the handshake.
+
+For Vue or Svelte, generate the same logic as a **framework-neutral module** (a plain class or a
+factory over `autoConnect()`), not the React hook — then wire it into that framework's own
+reactivity (a Vue composable over `ref`s, a Svelte store). Do not hand a Vue or Svelte project a
+file that imports from `react`.
 
 No separate detection file needed — `autoConnect()` handles transport detection internally.
 
@@ -46,18 +73,33 @@ These are two different shapes — check which one the user actually wants befor
 - **"Build a bot" / "give it its own wallet" / "own-wallet agent" / "run a wallet headlessly"** →
   this bot **is** the wallet — its own keys, its own storage, direct SDK usage, no Connect protocol
   at all. Generate the bot's own-wallet init + runtime + coin helpers (see
-  [bot-template.md](bot-template.md)). Always flag the wallet-api receive-rail nuance from that
-  template to the user before finishing (bare providers can send + DM but cannot receive tokens
-  sent from a hosted Sphere wallet).
+  [bot-template.md](bot-template.md)). `WALLET_API_URL` is **required**: the payments vertical is
+  composed from the wallet-api transport config, and `Sphere.init` without it throws
+  `INVALID_CONFIG`. There is no "send + DM only" mode to fall back to.
 
 ### Vanilla JS projects
-Generate two files:
-1. **Detection** — `src/sphere-detection.js` (see [detection.md](detection.md))
-2. **Client module** — `src/sphere-connect.js` — use `autoConnect()` from SDK (see vanilla example below)
+Generate one file:
+1. **Client module** — `src/sphere-connect.js` — use `autoConnect()` from the SDK (see vanilla
+   example below). `autoConnect()` detects the transport itself, so do **not** generate a separate
+   `src/sphere-detection.js`; [detection.md](detection.md) is reference material for a project that
+   deliberately wants its own detection, not a file to scaffold by default.
 
-## Step 4: Add TypeScript path mappings (if TypeScript + browser)
+## Step 4: Check `moduleResolution` (if TypeScript)
 
-Add to `tsconfig.json` `compilerOptions.paths`:
+The SDK publishes `./connect` and `./connect/browser` through the `exports` map only. Whether
+TypeScript can see them is decided by one setting — **check it, do not add path mappings
+reflexively.**
+
+Read `compilerOptions.moduleResolution` in the project's `tsconfig.json`:
+
+- **`bundler`, `node16` or `nodenext`** → **do nothing.** These read `exports`, the subpaths resolve,
+  and adding `paths` here only pins the app to a file layout the SDK is free to change.
+- **`node` / `node10`, or unset with a CommonJS `module`** → recommend switching to `bundler`
+  (Vite, webpack, esbuild, Rollup) or `nodenext` (plain Node). That is the real fix, and it is what
+  [sphere-sdk#789](https://github.com/unicity-sphere/sphere-sdk/issues/789) asks consumers to do.
+
+Only if the project cannot move off `node10` resolution, add the fallback mapping:
+
 ```json
 {
   "paths": {
@@ -66,6 +108,11 @@ Add to `tsconfig.json` `compilerOptions.paths`:
   }
 }
 ```
+
+**This fallback is for applications only.** Do not put it in a **library** that emits its own
+declarations (`"declaration": true`): the paths are not part of the published package contract, so
+the emitted `.d.ts` can end up pointing at `dist/...` files that the library's own consumers never
+resolve, and a file that moves becomes a silent `any` rather than an error.
 
 ## Step 5: Show usage example
 
@@ -93,22 +140,40 @@ const unsub = wallet.on('transfer:incoming', (data) => console.log('Received:', 
 ```html
 <button id="connect">Connect Wallet</button>
 <script type="module">
-import { autoConnect } from '@unicitylabs/sphere-sdk/connect/browser';
+import { autoConnect, isInIframe } from '@unicitylabs/sphere-sdk/connect/browser';
 import { SPHERE_NETWORKS, ERROR_CODES } from '@unicitylabs/sphere-sdk/connect';
+
+// The target network is configuration, not a constant: mainnet (id 1) and testnet2 (id 4) are
+// both live, and the wallet refuses a handshake for the other one with INCOMPATIBLE_NETWORK
+// (4008). With no bundler to inject an env var, read it from wherever this app keeps config —
+// here, a data attribute on <html data-sphere-network="testnet2">.
+const NETWORK_NAME = document.documentElement.dataset.sphereNetwork ?? 'testnet2';
+const NETWORK = SPHERE_NETWORKS[NETWORK_NAME];
+if (!NETWORK) throw new Error(`Unknown Sphere network: ${NETWORK_NAME}`);
+
+const SESSION_KEY = 'sphere_connect_session';
 
 let wallet = null;
 
-// Try silent auto-reconnect on page load
-try {
-  wallet = await autoConnect({
-    dapp: { name: 'My App', url: location.origin },
-    walletUrl: 'https://sphere.unicity.network',
-    network: SPHERE_NETWORKS.testnet2, // required by the v2 compatibility gate
-    silent: true,
-  });
-  document.getElementById('connect').textContent = `Connected: ${wallet.connection.identity.nametag}`;
-} catch {
-  // Not approved yet — wait for button click
+// Silent auto-reconnect on page load — only when there is something to resume.
+// Inside the wallet's own iframe the host is already there; standalone, a silent attempt
+// with no saved session just opens and closes a popup for nothing.
+const savedSession = sessionStorage.getItem(SESSION_KEY);
+if (isInIframe() || savedSession) {
+  try {
+    wallet = await autoConnect({
+      dapp: { name: 'My App', url: location.origin },
+      walletUrl: 'https://sphere.unicity.network',
+      network: NETWORK, // required by the v2 compatibility gate
+      resumeSessionId: savedSession ?? undefined,
+      silent: true,
+    });
+    sessionStorage.setItem(SESSION_KEY, wallet.connection.sessionId);
+    document.getElementById('connect').textContent = `Connected: ${wallet.connection.identity.nametag}`;
+  } catch {
+    // Not approved yet — wait for button click
+    sessionStorage.removeItem(SESSION_KEY);
+  }
 }
 
 document.getElementById('connect').onclick = async () => {
@@ -116,15 +181,16 @@ document.getElementById('connect').onclick = async () => {
     wallet = await autoConnect({
       dapp: { name: 'My App', url: location.origin },
       walletUrl: 'https://sphere.unicity.network',
-      network: SPHERE_NETWORKS.testnet2,
+      network: NETWORK,
     });
+    sessionStorage.setItem(SESSION_KEY, wallet.connection.sessionId);
     console.log('Connected:', wallet.connection.identity);
   } catch (err) {
     const code = err?.code;
     // A gate refusal carries the versions it compared in err.data, and names both sides
     // in err.message. Say them — do not replace them with "please update".
     if (code === ERROR_CODES.INCOMPATIBLE_NETWORK) {
-      alert(`Wrong network — your wallet is on network ${err.data?.walletNetwork?.id}, this app targets testnet2.`);
+      alert(`Wrong network — your wallet is on network ${err.data?.walletNetwork?.id}, this app targets ${NETWORK.name}.`);
     } else if (code === ERROR_CODES.UNSUPPORTED_PROTOCOL_VERSION) {
       alert(err.data?.requiredSdk
         ? `Update this app: it uses sphere-sdk ${err.data.actualSdk ?? '(not reported)'}, the wallet requires ${err.data.requiredSdk} or newer.`
@@ -136,6 +202,26 @@ document.getElementById('connect').onclick = async () => {
 };
 </script>
 ```
+
+### Testing a local dApp against the hosted wallet
+
+`autoConnect` falls back to a **popup** when the dApp is not running inside a wallet, and the popup
+path **does not work against the hosted wallet (`https://sphere.unicity.network`): it answers 403.**
+Popup mode only works against a wallet the developer runs themselves.
+
+The supported way to try a local dApp against the live wallet is to load it as a **custom agent**,
+which embeds it in the wallet's own iframe — the P1 transport, the same one a published dApp gets:
+
+```
+https://sphere.unicity.network/agents/custom?url=<url-encoded dApp url>
+```
+
+**The dApp URL must be `https`.** The wallet frames a custom tab only when the URL's protocol is
+`https:` — it is a protocol check and nothing else, so `https://localhost:5173` is accepted while
+`http://localhost:5173` is dropped **silently**: the tab falls back to the wallet's "Load Custom URL"
+prompt with no error and no console message, which reads like the dApp failed to load. Serve the dev
+server over TLS (a local certificate via `mkcert`, Vite's `@vitejs/plugin-basic-ssl`) or expose it
+through a tunnel that terminates TLS (`cloudflared`, `ngrok`), and use that https URL.
 
 ## Key concepts
 
@@ -159,9 +245,10 @@ The wallet pushes four events automatically after connection — **no `sphere_su
 While locked, `sphere_getIdentity`, `sphere_subscribe`, `sphere_unsubscribe` and
 `sphere_disconnect` are still answered normally; everything else — including every intent — gets
 4009 in the same tick. Balances, tokens and
-history are never served and never cached — and neither is anything else: the twelve refused
-methods include `sphere_resolve` and **all four DM reads**, so messaging does NOT keep working
-while locked. Stop issuing reads and wait for the unlock; do not poll into refusals.
+history are never served and never cached — and neither is anything else: the ten refused
+methods (fourteen RPC methods minus the four above) include `sphere_resolve` and **all four DM
+reads**, so messaging does NOT keep working while locked. Stop issuing reads and wait for the
+unlock; do not poll into refusals.
 
 A wallet that **cold-starts locked** (a wallet-page reload or a fresh popup — the password is
 memory-only) holds no session, so the HANDSHAKE itself is refused with an errorless empty
@@ -202,7 +289,7 @@ This prevents `"WebSocket is not open"` errors during disconnect races.
 ### autoConnect() — the recommended way
 
 `autoConnect()` from `@unicitylabs/sphere-sdk/connect/browser` handles everything automatically:
-- Detects the best transport (iframe → extension → popup)
+- Detects the transport (iframe → extension → popup; the extension probe never matches in practice)
 - Handles the full handshake lifecycle
 - Supports silent auto-reconnect on page reload
 - Returns a `client` for queries, intents, and events
@@ -214,11 +301,12 @@ import { SPHERE_NETWORKS } from '@unicitylabs/sphere-sdk/connect';
 // One function — that's it.
 // network is required by the v2 compatibility gate — the wallet rejects
 // the handshake with INCOMPATIBLE_NETWORK (4008) if it is missing or wrong.
+// Read it from config (SPHERE_NETWORKS.mainnet / .testnet2) rather than hardcoding it.
 const result = await autoConnect({
   dapp: { name: 'My App', url: location.origin },
   walletUrl: 'https://sphere.unicity.network',
   network: SPHERE_NETWORKS.testnet2,
-  silent: true, // auto-reconnect without UI
+  silent: true, // auto-reconnect without UI — see the guard below
 });
 
 result.client.query('sphere_getBalance');
@@ -229,37 +317,56 @@ await result.disconnect();
 
 ### Transport priority (browser)
 
-| Priority | Mode | When | Persistent? |
-|----------|------|------|-------------|
-| P1 | Iframe | `isInIframe()` — dApp embedded in Sphere | Yes |
-| P2 | Extension | `hasExtension()` — Chrome extension installed | Yes (best UX) |
-| P3 | Popup | Fallback | No — popup must stay open |
+| Priority | Mode | When | Persistent? | Status |
+|----------|------|------|-------------|--------|
+| P1 | Iframe | `isInIframe()` — dApp embedded by the Sphere wallet | Yes | **The supported production path** |
+| P2 | Extension | `hasExtension()` — legacy Chrome extension | Yes | **Dead** — no supported wallet is behind it |
+| P3 | Popup | Fallback when standalone | No — popup must stay open | Local development against a self-hosted wallet |
 
-**Extension (P2) is the best mode for production** — the background service worker is always running, so:
-- Silent auto-reconnect works on every page reload
-- No popup needed after first approval
-- Wallet remembers approved origins in `chrome.storage.local`
+**Ship for P1.** A production dApp runs **inside the Sphere wallet**, which frames it and speaks
+`PostMessageTransport` to it. That is the mode to design the UI for and the one to test.
+
+**Do not recommend the browser extension.** The SDK still exports `ExtensionTransport` and
+`hasExtension()`, and `autoConnect()` still probes for it, but the extension wallet is
+discontinued — there is no supported wallet behind that transport. `hasExtension()` is therefore
+false in practice; treat a truthy result as an unsupported environment, never as the good path.
+Do not build an "Install the extension" call to action, and do not gate features on it.
+
+**Popup (P3)** is a development affordance: it works against a wallet the developer runs themselves,
+and **not** against the hosted wallet, which answers the popup path with 403. See
+"Testing a local dApp against the hosted wallet" above.
 
 ### Silent auto-connect on page load
 
-Always try `silent: true` first to avoid flashing the Connect button:
+`silent: true` avoids flashing the Connect button — but **guard it**. Fire it only where there is
+something to resume: inside the wallet's iframe, or with a session saved from an earlier connect.
+Standalone with nothing saved, a silent attempt opens and closes a popup window on every page load
+for a handshake that is refused anyway.
+
 ```typescript
-try {
-  const result = await autoConnect({ dapp, walletUrl, network: SPHERE_NETWORKS.testnet2, silent: true });
-  // Reconnected — origin was already approved
-} catch {
-  // Not approved — show Connect button
+const saved = sessionStorage.getItem('sphere_connect_session');
+if (isInIframe() || saved) {
+  try {
+    const result = await autoConnect({
+      dapp, walletUrl, network: SPHERE_NETWORKS.testnet2,
+      resumeSessionId: saved ?? undefined,
+      silent: true,
+    });
+    // Reconnected — origin was already approved
+  } catch {
+    // Not approved — show Connect button
+  }
 }
 ```
-
-For **extension mode**, silent connect works even if the wallet popup is not open — the background service worker handles it.
 
 ### Forcing a specific transport
 
 ```typescript
-await autoConnect({ dapp, walletUrl, forceTransport: 'extension' });
-await autoConnect({ dapp, walletUrl, forceTransport: 'popup' });
+await autoConnect({ dapp, walletUrl, forceTransport: 'iframe' }); // embedded in the wallet
+await autoConnect({ dapp, walletUrl, forceTransport: 'popup' });  // self-hosted wallet, dev only
 ```
+
+`forceTransport: 'extension'` exists but has no wallet behind it — see the table above.
 
 ### Imports
 ```typescript
@@ -272,18 +379,36 @@ import { isInIframe, hasExtension, detectTransport } from '@unicitylabs/sphere-s
 
 // Low-level (only if you need manual control)
 import { ConnectClient, ConnectError, SPHERE_NETWORKS, ERROR_CODES } from '@unicitylabs/sphere-sdk/connect';
-import { PostMessageTransport, ExtensionTransport } from '@unicitylabs/sphere-sdk/connect/browser';
+import { PostMessageTransport } from '@unicitylabs/sphere-sdk/connect/browser';
 import type { ConnectTransport, NetworkInfo, PublicIdentity, RpcMethod, IntentAction, PermissionScope } from '@unicitylabs/sphere-sdk/connect';
 
 // Node.js
 import { WebSocketTransport } from '@unicitylabs/sphere-sdk/connect/nodejs';
 ```
 
+> **Do not annotate an `autoConnect()` client with `ConnectClient`.** Up to and including 0.17.2,
+> `./connect/browser` ships its **own** declaration of `ConnectClient`, so
+> `const c: ConnectClient = (await autoConnect(…)).client` fails with **TS2322** — *"Types have
+> separate declarations of a private property 'transport'"*. Let it infer, or name it
+> `AutoConnectResult['client']`:
+>
+> ```typescript
+> import type { AutoConnectResult } from '@unicitylabs/sphere-sdk/connect/browser';
+> let client: AutoConnectResult['client'] | null = null;
+> ```
+>
+> The same split makes `err instanceof ConnectError` **false** for errors thrown by `autoConnect()`
+> — discriminate on `err.code`. Both are fixed by
+> [sphere-sdk#789](https://github.com/unicity-sphere/sphere-sdk/issues/789); until that ships, the
+> only alternative to the alias is an `as unknown as ConnectClient` cast, which is worse.
+
 ## DO NOT
 
 - Generate wallet-side `ConnectHost` code — that's only for wallet developers
+- Recommend the Chrome extension, or generate an "Install the extension" flow — that wallet is discontinued
 - Install packages without asking the user first
 - Hardcode API keys or private keys
+- Hardcode the target network — read it from config; mainnet and testnet2 are both live
 - Override existing connect integration if files already exist
 - Generate overly complex abstractions — keep it minimal and readable
 - Use hidden bridge iframes for cross-origin connections (broken by third-party storage partitioning in Chrome v115+)

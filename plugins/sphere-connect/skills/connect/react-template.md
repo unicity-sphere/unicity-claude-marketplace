@@ -4,18 +4,23 @@ Uses SDK's `autoConnect()` for automatic transport detection, silent reconnect, 
 
 ## Dependencies
 
-Requires `@unicitylabs/sphere-sdk` installed. No separate detection file needed.
+Requires `@unicitylabs/sphere-sdk` (use `0.17.x`). No separate detection file needed.
 
-## Testing against the real (hosted) wallet
+## Which transport this is written for
 
-`autoConnect` falls back to a **popup** when the dApp isn't running inside a
-wallet — and the popup path **does NOT work against the hosted wallet
-(`https://sphere.unicity.network`): it returns `403`.** To test a *local* dApp
-against the **live** wallet, load it as a **custom agent** at
-**https://sphere.unicity.network/agents/custom** so the wallet embeds it in an
-**iframe** (the P1 transport). Popup only works for a wallet the developer runs
-themselves (e.g. at `localhost:5173`). Tell the developer this when they ask how
-to try their dApp with a real wallet.
+The production transport is **P1, the iframe**: the Sphere wallet embeds the dApp and speaks
+`PostMessageTransport` to it. The popup is a local-development fallback, and the **browser
+extension is discontinued** — `hasExtension()` never matches a supported wallet, so this template
+has no extension code path and no "Connect via extension" button.
+
+For how to try a local dApp against the live wallet — the popup path returns **403** there, and a
+custom-agent URL must be **https** — see the "Testing a local dApp against the hosted wallet"
+section of [SKILL.md](SKILL.md).
+
+## Vite vs Next.js
+
+The template below is written for **Vite** (`import.meta.env.VITE_*`, browser globals at module
+scope). On Next.js three things change — see [Next.js shape](#nextjs-shape) at the end of this file.
 
 ## Template
 
@@ -23,7 +28,7 @@ to try their dApp with a real wallet.
 // src/hooks/useWalletConnect.ts
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { autoConnect, isInIframe, hasExtension } from '@unicitylabs/sphere-sdk/connect/browser';
+import { autoConnect, isInIframe } from '@unicitylabs/sphere-sdk/connect/browser';
 import { WALLET_EVENTS, SPHERE_NETWORKS, ERROR_CODES } from '@unicitylabs/sphere-sdk/connect';
 import type { AutoConnectResult, DetectedTransport } from '@unicitylabs/sphere-sdk/connect/browser';
 import type { PublicIdentity, RpcMethod, IntentAction, PermissionScope } from '@unicitylabs/sphere-sdk/connect';
@@ -44,13 +49,11 @@ export interface UseWalletConnect {
   permissions: readonly PermissionScope[];
   error: string | null;
   connect: () => Promise<void>;
-  connectViaExtension: () => Promise<void>;
   connectViaPopup: () => Promise<void>;
   disconnect: () => Promise<void>;
   query: <T = unknown>(method: RpcMethod | string, params?: Record<string, unknown>) => Promise<T>;
   intent: <T = unknown>(action: IntentAction | string, params: Record<string, unknown>) => Promise<T>;
   on: (event: string, handler: (data: unknown) => void) => () => void;
-  extensionInstalled: boolean;
   transportType: DetectedTransport | null;
 }
 const DISCONNECTED = {
@@ -88,6 +91,12 @@ function supportsGracefulLock(walletProtocol: string | null): boolean {
 
 const WALLET_URL = import.meta.env.VITE_WALLET_URL || 'https://sphere.unicity.network';
 
+// The target network is CONFIG, not a constant: mainnet (id 1) and testnet2 (id 4) are both live,
+// and the wallet refuses a handshake for the other one with INCOMPATIBLE_NETWORK (4008).
+const NETWORK_NAME = (import.meta.env.VITE_SPHERE_NETWORK ?? 'testnet2') as keyof typeof SPHERE_NETWORKS;
+const NETWORK = SPHERE_NETWORKS[NETWORK_NAME];
+if (!NETWORK) throw new Error(`Unknown Sphere network: ${NETWORK_NAME}`);
+
 // TODO: Replace with your app's metadata
 const DAPP_META = {
   name: 'My App',
@@ -99,10 +108,12 @@ const DAPP_META = {
 const SESSION_KEY = 'sphere_connect_session';
 
 export function useWalletConnect(): UseWalletConnect {
-  // Silent auto-connect for iframe and extension (both have persistent hosts).
-  // Also check for a saved popup session — allows resuming after page reload.
+  // GUARD the silent attempt: fire it only when there is something to resume — inside the
+  // wallet's iframe (the host is already there), or with a session saved from an earlier
+  // connect. Standalone with nothing saved, `silent: true` opens and closes a popup window on
+  // every page load for a handshake that is refused anyway.
   const hasSavedSession = typeof sessionStorage !== 'undefined' && !!sessionStorage.getItem(SESSION_KEY);
-  const willSilentCheck = isInIframe() || hasExtension() || hasSavedSession;
+  const willSilentCheck = isInIframe() || hasSavedSession;
 
   const [isAutoConnecting, setIsAutoConnecting] = useState(willSilentCheck);
   const [transportType, setTransportType] = useState<DetectedTransport | null>(null);
@@ -143,7 +154,7 @@ export function useWalletConnect(): UseWalletConnect {
       const result = await autoConnect({
         dapp: DAPP_META,
         walletUrl: WALLET_URL,
-        network: SPHERE_NETWORKS.testnet2, // required by the v2 compatibility gate
+        network: NETWORK, // required by the v2 compatibility gate
         forceTransport,
         silent,
         resumeSessionId: savedSession || undefined,
@@ -175,7 +186,7 @@ export function useWalletConnect(): UseWalletConnect {
       const data = (err as { data?: Record<string, unknown> })?.data;
       let message: string;
       if (code === ERROR_CODES.INCOMPATIBLE_NETWORK) {
-        const wanted = (data?.clientNetwork as { name?: string; id?: number })?.name ?? 'testnet2';
+        const wanted = (data?.clientNetwork as { name?: string; id?: number })?.name ?? NETWORK.name;
         const walletId = (data?.walletNetwork as { id?: number })?.id;
         message = `Wrong network — this app targets ${wanted}, your wallet is on network ${walletId ?? 'another'}.`;
       } else if (code === ERROR_CODES.UNSUPPORTED_PROTOCOL_VERSION) {
@@ -201,7 +212,6 @@ export function useWalletConnect(): UseWalletConnect {
   }, []);
 
   const connect = useCallback(() => doConnect(), [doConnect]);
-  const connectViaExtension = useCallback(() => doConnect('extension'), [doConnect]);
   const connectViaPopup = useCallback(() => {
     return isInIframe() ? doConnect('iframe') : doConnect('popup');
   }, [doConnect]);
@@ -344,13 +354,11 @@ export function useWalletConnect(): UseWalletConnect {
     ...state,
     isAutoConnecting,
     connect,
-    connectViaExtension,
     connectViaPopup,
     disconnect,
     query,
     intent,
     on,
-    extensionInstalled: hasExtension(),
     transportType,
   };
 }
@@ -360,15 +368,14 @@ export function useWalletConnect(): UseWalletConnect {
 
 | Priority | Mode | Persistent? | Notes |
 |----------|------|-------------|-------|
-| P1 | Embedded iframe | Yes (parent keeps running) | dApp runs inside Sphere's own iframe |
-| P2 | Browser extension | Yes (service worker) | Best UX — auto-reconnects on page reload |
-| P3 | Popup window | **No** — popup must stay open | Fallback when no extension. Session persisted via `sessionStorage` for page-reload resume. |
+| P1 | Embedded iframe | Yes (parent keeps running) | **The production path** — the dApp runs inside the Sphere wallet's own iframe |
+| P2 | Browser extension | — | **Discontinued.** `autoConnect()` still probes for it, but no supported wallet is behind it. This hook has no extension path |
+| P3 | Popup window | **No** — popup must stay open | Development fallback against a self-hosted wallet. The hosted wallet answers the popup path with **403**. Session persisted via `sessionStorage` for page-reload resume |
 
 ## Wallet events (handled automatically)
 
-The hook handles all four events `ConnectHost` pushes without a subscription. **The handling no
-longer depends on the transport** — a lock preserves the session in popup, extension and iframe
-mode alike.
+The hook handles all four events `ConnectHost` pushes without a subscription. **The handling does
+not depend on the transport** — a lock preserves the session in popup and iframe mode alike.
 
 | Event | What the hook does |
 |-------|--------------------|
@@ -418,33 +425,6 @@ raise the password field** — not a query, not an intent, not a handshake. A lo
 passive badge in the wallet and nothing more. A forged consent dialog gains an attacker nothing; a
 forged credential dialog harvests the seed password, so the two must never share a trigger.
 
-## Connection modes
-
-| Priority | Mode | Persistent? | Notes |
-|----------|------|-------------|-------|
-| P1 | Embedded iframe | Yes (parent keeps running) | dApp runs inside Sphere's own iframe |
-| P2 | Browser extension | Yes (service worker) | Best UX — auto-reconnects on page reload |
-| P3 | Popup window | **No** — popup must stay open | Fallback when no extension. Session persisted via `sessionStorage` for page-reload resume. |
-
-## Wallet events (handled automatically)
-
-The hook automatically handles the four wallet-initiated events pushed by `ConnectHost`. The
-reaction no longer depends on the transport — a lock preserves the session in popup, extension
-and iframe alike:
-
-| Event | What the hook does |
-|-------|--------------------|
-| `wallet:locked` | Sets `isWalletLocked = true` and **nothing else**. Client, transport and saved session all survive; requests answer `WALLET_LOCKED` (4009) until the wallet is unlocked. Against a legacy Connect 2.0 wallet (`walletProtocol === '2.0'`) it still tears down — there the same event had already revoked the session. |
-| `wallet:unlocked` | Compares the identity in the payload against the connected one. Same wallet → clears the flag and bumps `unlockEpoch` so read panels can refetch. Different wallet → sets `walletChanged` and resumes nothing. Subscriptions need no re-arming: the host replays them before pushing this. |
-| `wallet:disconnected` | The only teardown signal. Clears client, transport and saved session, and shows the Connect button. |
-| `identity:changed` | Updates `identity` in state, UI re-renders. |
-
-These events require **no `sphere_subscribe`** call — they are auto-pushed by the wallet.
-
-### Error-based auto-disconnect
-
-If any `query()` or `intent()` call fails with a transport/session error (e.g., popup was closed or refreshed), the hook automatically disconnects and resets state. This serves as a fallback when the `wallet:locked` event doesn't arrive.
-
 ## Usage
 
 ```tsx
@@ -461,10 +441,8 @@ function App() {
     return (
       <div>
         <button onClick={wallet.connect}>Connect Wallet</button>
-        {/* Or specific transport: */}
-        {wallet.extensionInstalled && (
-          <button onClick={wallet.connectViaExtension}>Connect via Extension</button>
-        )}
+        {/* Popup is a development affordance against a self-hosted wallet — the hosted
+            wallet answers the popup path with 403. Usually you only ship `connect`. */}
         <button onClick={wallet.connectViaPopup}>Connect via Popup</button>
         {wallet.error && <p style={{ color: 'red' }}>{wallet.error}</p>}
       </div>
@@ -484,9 +462,9 @@ function App() {
 ## Notes
 
 - Replace `DAPP_META` with your actual app name, description, and icon (shown in wallet connect dialog)
-- `VITE_WALLET_URL` defaults to `https://sphere.unicity.network`
+- `VITE_WALLET_URL` defaults to `https://sphere.unicity.network`; `VITE_SPHERE_NETWORK` defaults to `testnet2`
 - `isAutoConnecting` prevents flashing the Connect button on page reload
-- Extension mode auto-reconnects instantly on reload (background service worker checks approved origins)
+- The silent attempt is **guarded**: it only runs inside the wallet iframe or with a saved session
 - Popup mode requires the popup to stay open — closing it disconnects. The `sessionId` is saved to `sessionStorage` so the session can resume after page reload (as long as the popup is still open).
 - `autoConnect()` handles all transport detection internally — no separate detection file needed
 - `identity` updates in real-time when the user switches addresses in the wallet
@@ -495,7 +473,53 @@ function App() {
   `wallet:disconnected` (logout, wallet deleted, session expiry, a different seed behind the lock
   screen) resets the connection — plus a `wallet:locked` from a legacy Connect 2.0 wallet, which
   had already revoked the session.
-- Requires `@unicitylabs/sphere-sdk` ≥ 0.13.0 (published) for `WALLET_EVENTS.UNLOCKED` / `.DISCONNECTED`,
-  `ERROR_CODES.INTENT_OUTCOME_UNKNOWN`,
-  `ERROR_CODES.WALLET_LOCKED`, `ConnectResult.locked` and `ConnectClient.walletProtocol` /
-  `.walletLocked`.
+
+### Version floor
+
+The wallet enforces an npm SDK floor of **0.14.1** (`DEFAULT_MIN_CLIENT_SDK_VERSION = '0.14.1-0'`):
+a dApp reporting anything below it is refused with `UNSUPPORTED_PROTOCOL_VERSION` (4007) before any
+UI appears. A wallet may raise that floor via `ConnectHostConfig.minSdkVersion`.
+
+**Use `@unicitylabs/sphere-sdk@^0.17.0`.** That is what this template is written against, and it is
+what `mint_nft` needs on the dApp side — plus a wallet speaking **Connect 2.3**: a 2.2 wallet has no
+`nft:mint` scope and answers `mint_nft` with `PERMISSION_DENIED` (4002). Read `walletProtocol` and
+hide the action when its MINOR is below 3.
+
+### Next.js shape
+
+Three differences from the Vite template above:
+
+1. **`'use client'`** as the first line of the hook file. `autoConnect()` touches `window`.
+2. **`process.env.NEXT_PUBLIC_*`** instead of `import.meta.env.VITE_*`. Next.js inlines only
+   `NEXT_PUBLIC_`-prefixed vars into the browser bundle, and it must be read as a full static
+   member expression — `process.env[name]` is not substituted.
+3. **No browser globals at module scope.** `isInIframe()` reads `window`, which does not exist
+   during the server render, so the guard moves into the effect and starts as `false`:
+
+```tsx
+'use client';
+
+const WALLET_URL = process.env.NEXT_PUBLIC_WALLET_URL || 'https://sphere.unicity.network';
+const NETWORK_NAME = (process.env.NEXT_PUBLIC_SPHERE_NETWORK ?? 'testnet2') as keyof typeof SPHERE_NETWORKS;
+const NETWORK = SPHERE_NETWORKS[NETWORK_NAME];
+
+export function useWalletConnect(): UseWalletConnect {
+  // Starts false on the server AND on the first client render — they must match, or React
+  // logs a hydration mismatch. The real decision happens in the effect below.
+  const [isAutoConnecting, setIsAutoConnecting] = useState(false);
+
+  // ... the rest of the hook is unchanged ...
+
+  useEffect(() => {
+    const saved = sessionStorage.getItem(SESSION_KEY);
+    if (!isInIframe() && !saved) return;   // same guard, evaluated in the browser
+    setIsAutoConnecting(true);
+    doConnect(undefined, true)
+      .catch(() => { /* silent check failed — show Connect button */ })
+      .finally(() => setIsAutoConnecting(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+}
+```
+
+`DAPP_META` reads `location.origin`, so build it inside the effect (or guard it with
+`typeof window !== 'undefined'`) for the same reason.

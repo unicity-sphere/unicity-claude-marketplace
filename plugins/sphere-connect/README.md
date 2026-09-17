@@ -43,4 +43,15 @@ const client = new ConnectClient({
 });
 ```
 
-See the [Connect protocol docs](https://github.com/unicitylabs/sphere-sdk/blob/main/docs/CONNECT.md) for the full RPC / intent / event reference.
+`SPHERE_NETWORKS` has two live entries — `mainnet` (id 1) and `testnet2` (id 4) — so read the target
+from configuration rather than hardcoding it.
+
+## Requirements
+
+- `@unicitylabs/sphere-sdk` **0.17.x**. The wallet refuses a handshake from a dApp reporting an SDK
+  below `0.14.1` with `UNSUPPORTED_PROTOCOL_VERSION` (4007).
+- A wallet speaking **Connect 2.3** for the `mint_nft` intent.
+- The production transport is the **iframe**: the Sphere wallet embeds the dApp. The Chrome
+  extension wallet is discontinued — do not build on `ExtensionTransport`.
+
+See the [Connect protocol docs](https://github.com/unicity-sphere/sphere-sdk/blob/main/docs/CONNECT.md) for the full RPC / intent / event reference.

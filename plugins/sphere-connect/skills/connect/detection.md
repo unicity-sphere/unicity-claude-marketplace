@@ -88,7 +88,10 @@ export function hasExtension() {
   never tell a user to install the extension.
 
 - **Fallback (popup)**: not in an iframe → open a wallet as a popup window. The popup must stay open
-  for the connection to work, and the **hosted** wallet (`https://sphere.unicity.network`) answers
-  the popup path with **403** — so this works only against a wallet the developer runs themselves.
-  To test a local dApp against the live wallet, load it as a custom agent instead
-  (`https://sphere.unicity.network/agents/custom?url=…`, **https URLs only** — see SKILL.md).
+  for the connection to work, and in practice this works only against a wallet the developer runs
+  themselves: `autoConnect()` opens `<walletUrl>/connect?origin=<your origin>`, and the hosted
+  wallet's CDN answers **403** to any query string containing `localhost` / `127.0.0.1` (measured
+  with curl — the same route with an `https` origin returns 200), so a local dApp's popup is refused
+  before it reaches the wallet. To test a local dApp against the live wallet, expose it over https
+  and load it as a custom agent instead (`https://sphere.unicity.network/agents/custom?url=…`,
+  **https URLs only** — see SKILL.md).

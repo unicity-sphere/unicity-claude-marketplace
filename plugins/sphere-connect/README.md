@@ -1,6 +1,6 @@
 # sphere-connect
 
-Connect your dApp to a Sphere wallet in minutes. Auto-detects extension / iframe / popup, handles reconnect on page reload, and provides a `query` / `intent` / `event` API. Supports React, Node.js, and vanilla JS.
+Connect your dApp to a Sphere wallet in minutes. Targets the iframe transport the wallet embeds dApps with, handles reconnect on page reload, and provides a `query` / `intent` / `event` API. Supports React, Node.js, and vanilla JS.
 
 The plugin ships a `connect` skill plus an `/integrate` command that scaffolds the wallet-connection code (transport detection, connect hook, RPC/intent/event wiring) for your project.
 

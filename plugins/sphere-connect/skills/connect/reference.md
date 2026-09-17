@@ -212,8 +212,8 @@ which do send it, keep working.
 
 ### The lock is a state, not a teardown
 
-Handling does **not** depend on the transport any more. In popup, extension and iframe mode alike
-a lock preserves the session; only `wallet:disconnected` ends it.
+Handling does **not** depend on the transport any more. In every transport mode a lock preserves
+the session; only `wallet:disconnected` ends it.
 
 | Transport | On `wallet:locked` |
 |-----------|--------------------|
@@ -300,24 +300,41 @@ try {
 A 4009 carries `data: { reason: 'locked' }` if you want the detail. The refusal **text** is a
 documented recommendation, not a contract — never match on it.
 
-A few SDK failures still carry no code at all, so keep a narrow message fallback for exactly those:
+A few SDK failures still carry no code at all, so keep a narrow message fallback for exactly those.
+This is the complete set in 0.17.2 — every plain `Error` the client-side Connect surface raises,
+three in `connect/client/ConnectClient.ts` and four in `impl/browser/connect/autoConnect.ts`:
 
 | Codeless failure | Raised by | Means |
 |------------------|-----------|-------|
 | `Connection timeout` | `ConnectClient.connect()` | no handshake response within `timeout` |
 | `Query timeout: <method>` | `ConnectClient.query()` | no response within `timeout` |
 | `Connection rejected by wallet` | `ConnectClient.connect()` | the wallet answered the handshake unapproved and sent no error |
+| `autoConnect: walletUrl is required when no extension or iframe is available` | `autoConnect()` popup path | config error — standalone page and no `walletUrl`; nothing was opened, so there is no connection to tear down |
+| `autoConnect: Failed to open wallet popup — check popup blocker settings` | `autoConnect()` popup path | `window.open()` returned null — a popup blocker; ask for a user gesture and retry |
 | `autoConnect: Wallet popup did not respond in time` | `autoConnect()` popup path | no `HOST_READY` from the popup |
 | `autoConnect: Wallet popup was closed before connecting` | `autoConnect()` popup path | the user closed the popup |
 
-**`Not connected`, `Disconnected` and the intent timeout are *not* on that list any more** — they
-are typed today: the first two are `ConnectError` with `NOT_CONNECTED` (4001), and a timed-out or
+**`Not connected`, `Disconnected` and the intent timeout are *not* on that list** — they are typed
+today: the first two are `ConnectError` with `NOT_CONNECTED` (4001), and a timed-out or
 mid-flight-dropped **intent** rejects with `INTENT_OUTCOME_UNKNOWN` (4201), never with a plain
 `Error`. Keep matching them by text and a 4201 lands in the "connection is gone, reset" branch — the
 one place a retry must never be offered.
 
 The old advice, `/not.connected|timeout|transport|closed|session/i`, disconnected on any error whose
 text merely mentioned a session.
+
+The two `walletUrl` / popup-blocker rows fail **before** a transport exists, so they belong in a
+"could not start" branch, not in the codeless-teardown regex a request path uses.
+
+On Node, `WebSocketTransport.connect()` additionally rejects with whatever the `ws` implementation
+threw at construction or emitted as `onerror`. That error is not authored by the SDK and its text is
+not a contract: match nothing there, and treat any non-`ConnectError` from a Node connect as a
+transport failure.
+
+One more failure on this surface is typed but **not** a `ConnectError`: `nftContentToWire()`
+validates before anything is sent and throws a `SphereError` whose `code` is the string
+`'VALIDATION_ERROR'`, not a numeric Connect code. Catch it where you build the `mint_nft` payload —
+that call never reaches the wallet.
 
 ## Subscribable Events
 

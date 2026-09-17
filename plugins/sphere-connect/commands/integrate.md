@@ -41,9 +41,13 @@ Target framework: **$ARGUMENTS** (if not specified, auto-detect from package.jso
    `VITE_SPHERE_NETWORK=testnet2`; Next.js: the same two as `NEXT_PUBLIC_*`.
 
 6. Show a concise usage example after generating files, and tell the developer how to try it against
-   a real wallet: the popup path returns **403** against the hosted wallet, so a local dApp is loaded
-   as a custom agent at `https://sphere.unicity.network/agents/custom?url=<url>` — and **that URL must
-   be https**. `http://localhost:…` is dropped silently and shows the wallet's "Load Custom URL"
-   prompt instead, so serve the dev server over TLS or put it behind a tunnel.
+   a real wallet: serve the dApp over **https on a publicly reachable host** (an https tunnel such as
+   `cloudflared` / `ngrok` in front of the dev server) and load it as a custom agent at
+   `https://sphere.unicity.network/agents/custom?url=<url-encoded https url>`. A `localhost` /
+   `127.0.0.1` URL in that query is answered **403** by the CDN before the wallet ever sees it
+   (measured with curl — the same route with an https URL returns 200), and a plain `http://` URL
+   would not be framed anyway: the wallet gates a custom tab on `https:` and otherwise falls back
+   silently to its "Load Custom URL" prompt. Popup mode and localhost stay fine against a wallet the
+   developer runs themselves. See SKILL.md, "Testing a local dApp against the hosted wallet".
 
 Do NOT overwrite existing files without asking the user first.

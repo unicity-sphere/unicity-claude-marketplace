@@ -13,9 +13,11 @@ The production transport is **P1, the iframe**: the Sphere wallet embeds the dAp
 extension is discontinued** — `hasExtension()` never matches a supported wallet, so this template
 has no extension code path and no "Connect via extension" button.
 
-For how to try a local dApp against the live wallet — the popup path returns **403** there, and a
-custom-agent URL must be **https** — see the "Testing a local dApp against the hosted wallet"
-section of [SKILL.md](SKILL.md).
+To try a local dApp against the live wallet it has to be reachable over **https** and loaded as a
+custom agent: a `localhost` / `127.0.0.1` URL in the wallet's query string is answered **403** by
+the CDN before the wallet sees it, which is also why a popup opened from a local dev server never
+connects there. See the "Testing a local dApp against the hosted wallet" section of
+[SKILL.md](SKILL.md).
 
 ## Vite vs Next.js
 
@@ -370,7 +372,7 @@ export function useWalletConnect(): UseWalletConnect {
 |----------|------|-------------|-------|
 | P1 | Embedded iframe | Yes (parent keeps running) | **The production path** — the dApp runs inside the Sphere wallet's own iframe |
 | P2 | Browser extension | — | **Discontinued.** `autoConnect()` still probes for it, but no supported wallet is behind it. This hook has no extension path |
-| P3 | Popup window | **No** — popup must stay open | Development fallback against a self-hosted wallet. The hosted wallet answers the popup path with **403**. Session persisted via `sessionStorage` for page-reload resume |
+| P3 | Popup window | **No** — popup must stay open | Development fallback against a self-hosted wallet. Against the hosted wallet the popup URL carries `?origin=http://localhost:…`, and the CDN answers **403** to a local URL in the query before the wallet sees it. Session persisted via `sessionStorage` for page-reload resume |
 
 ## Wallet events (handled automatically)
 
@@ -441,8 +443,9 @@ function App() {
     return (
       <div>
         <button onClick={wallet.connect}>Connect Wallet</button>
-        {/* Popup is a development affordance against a self-hosted wallet — the hosted
-            wallet answers the popup path with 403. Usually you only ship `connect`. */}
+        {/* Popup is a development affordance against a self-hosted wallet — against the
+            hosted wallet the localhost origin in the popup URL is answered 403 by the CDN.
+            Usually you only ship `connect`. */}
         <button onClick={wallet.connectViaPopup}>Connect via Popup</button>
         {wallet.error && <p style={{ color: 'red' }}>{wallet.error}</p>}
       </div>

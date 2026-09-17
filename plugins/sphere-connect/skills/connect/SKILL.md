@@ -205,23 +205,41 @@ document.getElementById('connect').onclick = async () => {
 
 ### Testing a local dApp against the hosted wallet
 
-`autoConnect` falls back to a **popup** when the dApp is not running inside a wallet, and the popup
-path **does not work against the hosted wallet (`https://sphere.unicity.network`): it answers 403.**
-Popup mode only works against a wallet the developer runs themselves.
-
-The supported way to try a local dApp against the live wallet is to load it as a **custom agent**,
-which embeds it in the wallet's own iframe — the P1 transport, the same one a published dApp gets:
+Serve the dApp over **https on a publicly reachable host** and load it as a **custom agent**, which
+embeds it in the wallet's own iframe — the P1 transport, the same one a published dApp gets:
 
 ```
-https://sphere.unicity.network/agents/custom?url=<url-encoded dApp url>
+https://sphere.unicity.network/agents/custom?url=<url-encoded https dApp url>
 ```
 
-**The dApp URL must be `https`.** The wallet frames a custom tab only when the URL's protocol is
-`https:` — it is a protocol check and nothing else, so `https://localhost:5173` is accepted while
-`http://localhost:5173` is dropped **silently**: the tab falls back to the wallet's "Load Custom URL"
-prompt with no error and no console message, which reads like the dApp failed to load. Serve the dev
-server over TLS (a local certificate via `mkcert`, Vite's `@vitejs/plugin-basic-ssl`) or expose it
-through a tunnel that terminates TLS (`cloudflared`, `ngrok`), and use that https URL.
+An https tunnel in front of the dev server (`cloudflared`, `ngrok`) is the quickest way to get such
+a URL, and a tunnel host is the shape of URL that was measured as reachable. Two independent gates
+stand between a plain `http://localhost:5173` dev server and that iframe, and **neither of them is
+the wallet refusing the popup route**:
+
+- **The CDN rejects local URLs in the query string.** Measured with `curl` on 2026-09-17 (HTTP
+  status codes only): `GET https://sphere.unicity.network/connect` → **200**,
+  `/connect?origin=https%3A%2F%2Fexample.com` → **200**,
+  `/agents/custom?url=https%3A%2F%2Ffoo.ngrok.app` → **200**, plain home page → **200**. But **any**
+  query string containing `localhost` or `127.0.0.1` → **403**, served by CloudFront ("ERROR: The
+  request could not be satisfied"), on every route tested and with or without browser-like
+  `User-Agent` / `Accept` headers. So it is a CDN/WAF rule about local URLs in the query — not the
+  wallet, and not specific to `/connect`. It is also what makes the **popup** path look broken
+  against the hosted wallet: `autoConnect()` opens `<walletUrl>/connect?origin=<your origin>`, so a
+  dApp on `http://localhost:5173` puts `localhost` in the query and the request is refused before
+  the wallet sees it.
+- **The wallet frames a custom tab only when the URL is `https`.** `isHttpsUrl` is a protocol-only
+  check (sphere `src/components/desktop/DesktopLayout.tsx:80`), so an `http://` URL is dropped
+  **silently**: the tab falls back to the wallet's "Load Custom URL" prompt with no error and no
+  console message, which reads like the dApp failed to load.
+
+Typing an `https://` URL into that in-app "Load Custom URL" prompt avoids the query string entirely
+and should clear the https gate, but **that path was not tested end to end** — do not present it as
+the known-good route. (The prompt normalises a bare `localhost:5173` to `http://localhost:5173`,
+which the https gate then drops, so type the full `https://` URL.)
+
+Against a wallet the developer runs themselves (the sphere dev server on `localhost:5173`) none of
+this applies: popup mode and localhost are fine there.
 
 ## Key concepts
 
@@ -332,9 +350,11 @@ discontinued — there is no supported wallet behind that transport. `hasExtensi
 false in practice; treat a truthy result as an unsupported environment, never as the good path.
 Do not build an "Install the extension" call to action, and do not gate features on it.
 
-**Popup (P3)** is a development affordance: it works against a wallet the developer runs themselves,
-and **not** against the hosted wallet, which answers the popup path with 403. See
-"Testing a local dApp against the hosted wallet" above.
+**Popup (P3)** is a development affordance against a wallet the developer runs themselves. Pointed
+at the hosted wallet from a local dev server it never reaches the wallet at all: `autoConnect()`
+opens `<walletUrl>/connect?origin=<your origin>`, and the CDN answers **403** to any query string
+containing `localhost` / `127.0.0.1` (measured with curl; the same route with an `https` origin
+returns 200). See "Testing a local dApp against the hosted wallet" above.
 
 ### Silent auto-connect on page load
 

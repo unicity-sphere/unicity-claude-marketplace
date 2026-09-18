@@ -406,8 +406,8 @@ import type { ConnectTransport, NetworkInfo, PublicIdentity, RpcMethod, IntentAc
 import { WebSocketTransport } from '@unicitylabs/sphere-sdk/connect/nodejs';
 ```
 
-> **Do not annotate an `autoConnect()` client with `ConnectClient`.** Up to and including 0.17.2,
-> `./connect/browser` ships its **own** declaration of `ConnectClient`, so
+> **Do not annotate an `autoConnect()` client with `ConnectClient`.** Until the SDK release that ships the
+> sphere-sdk#790 fix, `./connect/browser` ships its **own** declaration of `ConnectClient`, so
 > `const c: ConnectClient = (await autoConnect(…)).client` fails with **TS2322** — *"Types have
 > separate declarations of a private property 'transport'"*. Let it infer, or name it
 > `AutoConnectResult['client']`:

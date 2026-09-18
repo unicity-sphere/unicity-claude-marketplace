@@ -576,8 +576,8 @@ import { ConnectError, ERROR_CODES } from '@unicitylabs/sphere-sdk/connect';
 
 **Important: discriminate on the numeric `.code`, never on `instanceof ConnectError`.**
 
-The reason is not "some apps bundle the SDK twice" — it is the SDK's own packaging. Up to and
-including 0.17.2, `./connect/browser` ships **its own copy** of the Connect core, so there are two
+The reason is not "some apps bundle the SDK twice" — it is the SDK's own packaging. Until the SDK
+release that ships the sphere-sdk#790 fix, `./connect/browser` ships **its own copy** of the Connect core, so there are two
 `ConnectError` classes in one install. An error thrown by `autoConnect()` is an instance of the copy
 inside `./connect/browser`, and `err instanceof ConnectError` — with `ConnectError` imported from
 `./connect` — is therefore **`false`**. Nothing about the app's own bundling changes that.

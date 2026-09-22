@@ -151,7 +151,7 @@ app.post('/verify', (req, res) => {
 });
 ```
 
-Install the SDK (any 0.7.2+ release) plus the two runtime deps the code above imports — `express` and `jsonwebtoken` (add `@types/jsonwebtoken` as a dev dep if your project is TypeScript, as shown here):
+Install the SDK plus the two runtime deps the code above imports — `express` and `jsonwebtoken` (add `@types/jsonwebtoken` as a dev dep if your project is TypeScript, as shown here). The verification helpers below are old and stable, but pin `0.17.x` anyway: the **frontend** half of this flow handshakes with the wallet, which refuses any dApp reporting an SDK below `0.14.1`:
 ```bash
 npm install @unicitylabs/sphere-sdk express jsonwebtoken
 npm install -D @types/jsonwebtoken
@@ -159,17 +159,34 @@ npm install -D @types/jsonwebtoken
 
 ### Optional production step: resolving a `directAddress`
 
-`sphere-api` (this plugin's production reference) goes one step further: after recovering `chainPubkey`, it optionally resolves that pubkey to a `directAddress` / nametag via `sphere.resolve(chainPubkey)` (a Nostr binding lookup), and may key user-facing display or lookups on the resolved address. This step is **not required for the core auth decision** — it needs a full `Sphere.init()` (storage, transport, oracle providers), so only add it if the app actually needs a resolved address/nametag, not as a prerequisite for verifying identity:
+`sphere-api` (this plugin's production reference) goes one step further: after recovering `chainPubkey`, it optionally resolves that pubkey to a `directAddress` / nametag via `sphere.resolve(chainPubkey)` (a Nostr binding lookup), and may key user-facing display or lookups on the resolved address. This step is **not required for the core auth decision** — it needs a full `Sphere.init()` (storage, transport and oracle providers **plus a wallet-api composition**), so only add it if the app actually needs a resolved address/nametag, not as a prerequisite for verifying identity:
 
 ```typescript
 import { Sphere } from '@unicitylabs/sphere-sdk';
 import { createNodeProviders } from '@unicitylabs/sphere-sdk/impl/nodejs';
+import { createWalletApiProviders } from '@unicitylabs/sphere-sdk/impl/shared/wallet-api';
+
+const NETWORK = (process.env.SPHERE_NETWORK ?? 'testnet2') as 'mainnet' | 'testnet2';
 
 // Boot once at startup — only needed if you use sphere.resolve() below.
 let sphere: Sphere;
 export async function initResolverSphere() {
-  const providers = createNodeProviders({ network: 'testnet2', dataDir: './.sphere-resolver', oracle: { apiKey: process.env.AGGREGATOR_API_KEY! } });
-  const { sphere: instance } = await Sphere.init({ ...providers, autoGenerate: true });
+  const base = createNodeProviders({
+    network: NETWORK,
+    dataDir: './.sphere-resolver',
+    oracle: { apiKey: process.env.AGGREGATOR_API_KEY! },
+  });
+  // REQUIRED. Sphere.init composes its payments vertical from this config and throws
+  // INVALID_CONFIG without it — "Sphere requires a wallet-api composition for money" —
+  // even for a resolver that only ever calls sphere.resolve(). walletApi.network must
+  // equal the `network` below: a payments composition is single-network.
+  const providers = createWalletApiProviders(base, {
+    baseUrl: process.env.WALLET_API_URL!,
+    network: NETWORK,
+  });
+  // `network` is optional in the TYPE but required in practice: the composition asserts
+  // walletApi.network === the Sphere network, so omitting it throws INVALID_CONFIG.
+  const { sphere: instance } = await Sphere.init({ ...providers, network: NETWORK, autoGenerate: true });
   sphere = instance;
 }
 
